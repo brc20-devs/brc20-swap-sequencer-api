@@ -1,0 +1,12 @@
+node_modules
+dist/
+logs/*
+!logs/.keep
+.DS_Store
+docs/build
+es 
+umd
+output
+*.ignore.*
+ignore/
+conf/config.json

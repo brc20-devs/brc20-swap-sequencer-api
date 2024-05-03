@@ -1,0 +1,28 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "current",
+      "type": "node",
+      "request": "launch",
+      "runtimeArgs": ["-r", "ts-node/register"],
+      "args": ["${file}"]
+    },
+    {
+      "command": "yarn test",
+      "name": "run test",
+      "request": "launch",
+      "type": "node-terminal"
+    },
+    {
+      "command": "yarn start-dev",
+      "name": "develop mode",
+      "request": "launch",
+      "type": "node-terminal",
+      "preLaunchTask": "compile"
+    }
+  ]
+}

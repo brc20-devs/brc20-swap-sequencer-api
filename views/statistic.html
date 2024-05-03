@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<meta charset="UTF-8"> 
+<html>
+<head>
+    <title>statistic</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <canvas id="histogramChart1"></canvas>
+    <canvas id="histogramChart2"></canvas>
+
+    <script>
+        var data = <%-JSON.stringify(data)%>
+
+        var ctx1 = document.getElementById('histogramChart1').getContext('2d');
+        var chart1 = new Chart(ctx1, {
+            type: 'bar',
+            data: {
+                labels: data.date,
+                datasets: [
+                    {
+                        label: 'withdraw',
+                        data: data.withdraw_total,
+                        backgroundColor: 'rgba(0, 0, 255, 0.5)', 
+                        borderColor: 'blue',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'deposit',
+                        data: data.deposit_total,
+                        backgroundColor: 'rgba(255, 0, 0, 0.5)', 
+                        borderColor: 'red',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'matching',
+                        data: data.matching_total,
+                        backgroundColor: 'rgba(0, 255, 0, 0.5)', 
+                        borderColor: 'green',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'backlog',
+                        data: data.backlog,
+                        backgroundColor: 'rgba(0, 255, 255, 0.5)', 
+                        borderColor: 'yellow',
+                        borderWidth: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: {
+                        stacked: false, 
+                        beginAtZero: true, 
+                        title: {
+                            display: true,
+                            text: 'time'
+                        }
+                    },
+                    y: {
+                        stacked: false, 
+                        beginAtZero: true, 
+                        title: {
+                            display: true,
+                            text: 'amount'
+                        },
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                layout: {
+                    padding: {
+                        left: 20,
+                        right: 20,
+                        top: 20,
+                        bottom: 20
+                    }
+                },
+                barPercentage: 1, 
+                categoryPercentage: 0.8
+            }
+        });
+
+        var ctx2 = document.getElementById('histogramChart2').getContext('2d');
+        var chart2 = new Chart(ctx2, {
+            type: 'line',
+            data: {
+                labels: data.date,
+                datasets: [
+                    {
+                        label: 'deposit_num',
+                        data: data.deposit_num,
+                        backgroundColor: 'rgba(255, 50, 50, 0.5)', 
+                        borderColor: 'red',
+                        borderWidth: 1
+                    },
+                    {
+                        label: 'matching_num',
+                        data: data.matching_num,
+                        backgroundColor: 'rgba(50, 255, 50, 0.5)', 
+                        borderColor: 'green',
+                        borderWidth: 1
+                    },
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: {
+                        stacked: false, 
+                        beginAtZero: true, 
+                        title: {
+                            display: true,
+                            text: 'time'
+                        }
+                    },
+                    y: {
+                        stacked: false, 
+                        beginAtZero: true, 
+                        title: {
+                            display: true,
+                            text: 'amount'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                layout: {
+                    padding: {
+                        left: 20,
+                        right: 20,
+                        top: 20,
+                        bottom: 20
+                    }
+                },
+                barPercentage: 1, 
+                categoryPercentage: 0.8
+            }
+        });
+    </script>
+</body>
+</html>

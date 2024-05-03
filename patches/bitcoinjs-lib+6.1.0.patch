@@ -1,0 +1,409 @@
+diff --git a/node_modules/bitcoinjs-lib/src/payments/p2pkh.js b/node_modules/bitcoinjs-lib/src/payments/p2pkh.js
+index 8edc8ba..695a8ba 100644
+--- a/node_modules/bitcoinjs-lib/src/payments/p2pkh.js
++++ b/node_modules/bitcoinjs-lib/src/payments/p2pkh.js
+@@ -108,8 +108,10 @@ function p2pkh(a, opts) {
+     if (a.pubkey) {
+       const pkh = bcrypto.hash160(a.pubkey);
+       if (hash.length > 0 && !hash.equals(pkh))
+-        throw new TypeError('Hash mismatch');
+-      else hash = pkh;
++
++        // throw new TypeError('Hash mismatch');
++        // else
++        hash = pkh;
+     }
+     if (a.input) {
+       const chunks = _chunks();
+diff --git a/node_modules/bitcoinjs-lib/src/payments/p2tr.js b/node_modules/bitcoinjs-lib/src/payments/p2tr.js
+index d2cbc02..09f7e39 100644
+--- a/node_modules/bitcoinjs-lib/src/payments/p2tr.js
++++ b/node_modules/bitcoinjs-lib/src/payments/p2tr.js
+@@ -31,7 +31,7 @@ function p2tr(a, opts) {
+       internalPubkey: types_1.typeforce.maybe(types_1.typeforce.BufferN(32)),
+       hash: types_1.typeforce.maybe(types_1.typeforce.BufferN(32)),
+       pubkey: types_1.typeforce.maybe(types_1.typeforce.BufferN(32)),
+-      signature: types_1.typeforce.maybe(types_1.typeforce.BufferN(64)),
++      signature: types_1.typeforce.maybe(types_1.typeforce.Buffer),
+       witness: types_1.typeforce.maybe(
+         types_1.typeforce.arrayOf(types_1.typeforce.Buffer),
+       ),
+diff --git a/node_modules/bitcoinjs-lib/src/payments/p2wpkh.js b/node_modules/bitcoinjs-lib/src/payments/p2wpkh.js
+index 168e08f..9be7fab 100644
+--- a/node_modules/bitcoinjs-lib/src/payments/p2wpkh.js
++++ b/node_modules/bitcoinjs-lib/src/payments/p2wpkh.js
+@@ -106,9 +106,15 @@ function p2wpkh(a, opts) {
+     }
+     if (a.pubkey) {
+       const pkh = bcrypto.hash160(a.pubkey);
+-      if (hash.length > 0 && !hash.equals(pkh))
+-        throw new TypeError('Hash mismatch');
+-      else hash = pkh;
++      if (hash.length > 0 && !hash.equals(pkh)) {
++
++        const { Psbt } = require('../psbt');
++        if (!Psbt.ignoreVerifySig) {
++          throw new TypeError('Hash mismatch');
++        }
++      }
++      hash = pkh;
++
+       if (!(0, types_1.isPoint)(a.pubkey) || a.pubkey.length !== 33)
+         throw new TypeError('Invalid pubkey for p2wpkh');
+     }
+diff --git a/node_modules/bitcoinjs-lib/src/psbt.d.ts b/node_modules/bitcoinjs-lib/src/psbt.d.ts
+index de7bbb3..61cc734 100644
+--- a/node_modules/bitcoinjs-lib/src/psbt.d.ts
++++ b/node_modules/bitcoinjs-lib/src/psbt.d.ts
+@@ -53,8 +53,9 @@ export type ValidateSigFunction = (pubkey: Buffer, msghash: Buffer, signature: B
+  */
+ export declare class Psbt {
+     readonly data: PsbtBase;
++    static ignoreVerifySig: boolean;
+     static fromBase64(data: string, opts?: PsbtOptsOptional): Psbt;
+-    static fromHex(data: string, opts?: PsbtOptsOptional): Psbt;
++    static fromHex(data: string, opts: PsbtOptsOptional): Psbt;
+     static fromBuffer(buffer: Buffer, opts?: PsbtOptsOptional): Psbt;
+     private __CACHE;
+     private opts;
+@@ -198,4 +199,5 @@ tapLeafHashToFinalize?: Buffer) => {
+     finalScriptWitness: Buffer | undefined;
+ };
+ type AllScriptType = 'witnesspubkeyhash' | 'pubkeyhash' | 'multisig' | 'pubkey' | 'nonstandard' | 'p2sh-witnesspubkeyhash' | 'p2sh-pubkeyhash' | 'p2sh-multisig' | 'p2sh-pubkey' | 'p2sh-nonstandard' | 'p2wsh-pubkeyhash' | 'p2wsh-multisig' | 'p2wsh-pubkey' | 'p2wsh-nonstandard' | 'p2sh-p2wsh-pubkeyhash' | 'p2sh-p2wsh-multisig' | 'p2sh-p2wsh-pubkey' | 'p2sh-p2wsh-nonstandard';
+-export {};
++export { };
++
+diff --git a/node_modules/bitcoinjs-lib/src/psbt.js b/node_modules/bitcoinjs-lib/src/psbt.js
+index 9aa3668..49f4240 100644
+--- a/node_modules/bitcoinjs-lib/src/psbt.js
++++ b/node_modules/bitcoinjs-lib/src/psbt.js
+@@ -62,6 +62,7 @@ const DEFAULT_OPTS = {
+  *   Transaction object. Such as fee rate not being larger than maximumFeeRate etc.
+  */
+ class Psbt {
++  static ignoreVerifySig = false;
+   static fromBase64(data, opts = {}) {
+     const buffer = Buffer.from(data, 'base64');
+     return this.fromBuffer(buffer, opts);
+@@ -77,6 +78,7 @@ class Psbt {
+     return psbt;
+   }
+   constructor(opts = {}, data = new bip174_1.Psbt(new PsbtTransaction())) {
++
+     this.data = data;
+     // set defaults
+     this.opts = Object.assign({}, DEFAULT_OPTS, opts);
+@@ -135,7 +137,7 @@ class Psbt {
+           output.script,
+           this.opts.network,
+         );
+-      } catch (_) {}
++      } catch (_) { }
+       return {
+         script: (0, bufferutils_1.cloneBuffer)(output.script),
+         value: output.value,
+@@ -197,7 +199,7 @@ class Psbt {
+     ) {
+       throw new Error(
+         `Invalid arguments for Psbt.addInput. ` +
+-          `Requires single object with at least [hash] and [index]`,
++        `Requires single object with at least [hash] and [index]`,
+       );
+     }
+     (0, bip371_1.checkTaprootInputFields)(inputData, inputData, 'addInput');
+@@ -230,7 +232,7 @@ class Psbt {
+     ) {
+       throw new Error(
+         `Invalid arguments for Psbt.addOutput. ` +
+-          `Requires single object with at least [script or address] and [value]`,
++        `Requires single object with at least [script or address] and [value]`,
+       );
+     }
+     checkInputsForPartialSig(this.data.inputs, 'addOutput');
+@@ -249,7 +251,10 @@ class Psbt {
+     return this;
+   }
+   extractTransaction(disableFeeCheck) {
+-    if (!this.data.inputs.every(isFinalized)) throw new Error('Not finalized');
++
++    if (!Psbt.ignoreVerifySig) {
++      if (!this.data.inputs.every(isFinalized)) throw new Error('Not finalized');
++    }
+     const c = this.__CACHE;
+     if (!disableFeeCheck) {
+       checkFees(this, c, this.opts);
+@@ -365,7 +370,7 @@ class Psbt {
+       'input',
+       input.redeemScript || redeemFromFinalScriptSig(input.finalScriptSig),
+       input.witnessScript ||
+-        redeemFromFinalWitnessScript(input.finalScriptWitness),
++      redeemFromFinalWitnessScript(input.finalScriptWitness),
+     );
+     const type = result.type === 'raw' ? '' : result.type + '-';
+     const mainType = classifyScript(result.meaningfulScript);
+@@ -430,11 +435,11 @@ class Psbt {
+       const { hash, script } =
+         sighashCache !== sig.hashType
+           ? getHashForSig(
+-              inputIndex,
+-              Object.assign({}, input, { sighashType: sig.hashType }),
+-              this.__CACHE,
+-              true,
+-            )
++            inputIndex,
++            Object.assign({}, input, { sighashType: sig.hashType }),
++            this.__CACHE,
++            true,
++          )
+           : { hash: hashCache, script: scriptCache };
+       sighashCache = sig.hashType;
+       hashCache = hash;
+@@ -455,18 +460,18 @@ class Psbt {
+     pubkey = pubkey && (0, bip371_1.toXOnly)(pubkey);
+     const allHashses = pubkey
+       ? getTaprootHashesForSig(
+-          inputIndex,
+-          input,
+-          this.data.inputs,
+-          pubkey,
+-          this.__CACHE,
+-        )
++        inputIndex,
++        input,
++        this.data.inputs,
++        pubkey,
++        this.__CACHE,
++      )
+       : getAllTaprootHashesForSig(
+-          inputIndex,
+-          input,
+-          this.data.inputs,
+-          this.__CACHE,
+-        );
++        inputIndex,
++        input,
++        this.data.inputs,
++        this.__CACHE,
++      );
+     if (!allHashses.length) throw new Error('No signatures for this pubkey');
+     const tapKeyHash = allHashses.find(h => !!h.leafHash);
+     if (tapKeySig && tapKeyHash) {
+@@ -591,7 +596,10 @@ class Psbt {
+       }
+     }
+     if (results.every(v => v === false)) {
+-      throw new Error('No inputs were signed');
++      if (!Psbt.ignoreVerifySig) {
++        throw new Error('No inputs were signed');
++      }
++
+     }
+     return this;
+   }
+@@ -1027,21 +1035,22 @@ function checkFees(psbt, cache, opts) {
+   if (feeRate >= opts.maximumFeeRate) {
+     throw new Error(
+       `Warning: You are paying around ${(satoshis / 1e8).toFixed(8)} in ` +
+-        `fees, which is ${feeRate} satoshi per byte for a transaction ` +
+-        `with a VSize of ${vsize} bytes (segwit counted as 0.25 byte per ` +
+-        `byte). Use setMaximumFeeRate method to raise your threshold, or ` +
+-        `pass true to the first arg of extractTransaction.`,
++      `fees, which is ${feeRate} satoshi per byte for a transaction ` +
++      `with a VSize of ${vsize} bytes (segwit counted as 0.25 byte per ` +
++      `byte). Use setMaximumFeeRate method to raise your threshold, or ` +
++      `pass true to the first arg of extractTransaction.`,
+     );
+   }
+ }
+ function checkInputsForPartialSig(inputs, action) {
+-  inputs.forEach(input => {
+-    const throws = (0, bip371_1.isTaprootInput)(input)
+-      ? (0, bip371_1.checkTaprootInputForSigs)(input, action)
+-      : (0, psbtutils_1.checkInputForSig)(input, action);
+-    if (throws)
+-      throw new Error('Can not modify transaction, signatures exist.');
+-  });
++
++  // inputs.forEach(input => {
++  //   const throws = (0, bip371_1.isTaprootInput)(input)
++  //     ? (0, bip371_1.checkTaprootInputForSigs)(input, action)
++  //     : (0, psbtutils_1.checkInputForSig)(input, action);
++  //   if (throws)
++  //     throw new Error('Can not modify transaction, signatures exist.');
++  // });
+ }
+ function checkPartialSigSighashes(input) {
+   if (!input.sighashType || !input.partialSig) return;
+@@ -1054,10 +1063,13 @@ function checkPartialSigSighashes(input) {
+   });
+ }
+ function checkScriptForPubkey(pubkey, script, action) {
+-  if (!(0, psbtutils_1.pubkeyInScript)(pubkey, script)) {
+-    throw new Error(
+-      `Can not ${action} for this input with the key ${pubkey.toString('hex')}`,
+-    );
++
++  if (!Psbt.ignoreVerifySig) {
++    if (!(0, psbtutils_1.pubkeyInScript)(pubkey, script)) {
++      throw new Error(
++        `Can not ${action} for this input with the key ${pubkey.toString('hex')}`,
++      );
++    }
+   }
+ }
+ function checkTxEmpty(tx) {
+@@ -1090,10 +1102,12 @@ function scriptCheckerFactory(payment, paymentScriptName) {
+     const redeemScriptOutput = payment({
+       redeem: { output: redeemScript },
+     }).output;
+-    if (!scriptPubKey.equals(redeemScriptOutput)) {
+-      throw new Error(
+-        `${paymentScriptName} for ${ioType} #${inputIndex} doesn't match the scriptPubKey in the prevout`,
+-      );
++    if (!Psbt.ignoreVerifySig) {
++      if (!scriptPubKey.equals(redeemScriptOutput)) {
++        throw new Error(
++          `${paymentScriptName} for ${ioType} #${inputIndex} doesn't match the scriptPubKey in the prevout`,
++        );
++      }
+     }
+   };
+ }
+@@ -1103,8 +1117,11 @@ const checkWitnessScript = scriptCheckerFactory(
+   'Witness script',
+ );
+ function getTxCacheValue(key, name, inputs, c) {
+-  if (!inputs.every(isFinalized))
+-    throw new Error(`PSBT must be finalized to calculate ${name}`);
++
++  if (!Psbt.ignoreVerifySig) {
++    if (!inputs.every(isFinalized))
++      throw new Error(`PSBT must be finalized to calculate ${name}`);
++  }
+   if (key === '__FEE_RATE' && c.__FEE_RATE) return c.__FEE_RATE;
+   if (key === '__FEE' && c.__FEE) return c.__FEE;
+   let tx;
+@@ -1121,8 +1138,11 @@ function getTxCacheValue(key, name, inputs, c) {
+ }
+ function getFinalScripts(inputIndex, input, script, isSegwit, isP2SH, isP2WSH) {
+   const scriptType = classifyScript(script);
+-  if (!canFinalize(input, script, scriptType))
+-    throw new Error(`Can not finalize input #${inputIndex}`);
++
++  if (!Psbt.ignoreVerifySig) {
++    if (!canFinalize(input, script, scriptType))
++      throw new Error(`Can not finalize input #${inputIndex}`);
++  }
+   return prepareFinalScripts(
+     script,
+     scriptType,
+@@ -1253,17 +1273,17 @@ function getHashForSig(inputIndex, input, cache, forValidate, sighashTypes) {
+     )
+       throw new Error(
+         `Input #${inputIndex} has witnessUtxo but non-segwit script: ` +
+-          `${meaningfulScript.toString('hex')}`,
++        `${meaningfulScript.toString('hex')}`,
+       );
+     if (!forValidate && cache.__UNSAFE_SIGN_NONSEGWIT !== false)
+       console.warn(
+         'Warning: Signing non-segwit inputs without the full parent transaction ' +
+-          'means there is a chance that a miner could feed you incorrect information ' +
+-          "to trick you into paying large fees. This behavior is the same as Psbt's predecesor " +
+-          '(TransactionBuilder - now removed) when signing non-segwit scripts. You are not ' +
+-          'able to export this Psbt with toBuffer|toBase64|toHex since it is not ' +
+-          'BIP174 compliant.\n*********************\nPROCEED WITH CAUTION!\n' +
+-          '*********************',
++        'means there is a chance that a miner could feed you incorrect information ' +
++        "to trick you into paying large fees. This behavior is the same as Psbt's predecesor " +
++        '(TransactionBuilder - now removed) when signing non-segwit scripts. You are not ' +
++        'able to export this Psbt with toBuffer|toBase64|toHex since it is not ' +
++        'BIP174 compliant.\n*********************\nPROCEED WITH CAUTION!\n' +
++        '*********************',
+       );
+     hash = unsignedTx.hashForSignature(
+       inputIndex,
+@@ -1313,7 +1333,8 @@ function getTaprootHashesForSig(
+   const hashes = [];
+   if (input.tapInternalKey && !tapLeafHashToSign) {
+     const outputKey = (0, bip371_1.tweakInternalPubKey)(inputIndex, input);
+-    if ((0, bip371_1.toXOnly)(pubkey).equals(outputKey)) {
++
++    if ((0, bip371_1.toXOnly)(pubkey).equals(outputKey) || Psbt.ignoreVerifySig) {
+       const tapKeyHash = unsignedTx.hashForWitnessV1(
+         inputIndex,
+         signingScripts,
+@@ -1356,7 +1377,7 @@ function checkSighashTypeAllowed(sighashType, sighashTypes) {
+     const str = sighashTypeToString(sighashType);
+     throw new Error(
+       `Sighash type is not allowed. Retry the sign method passing the ` +
+-        `sighashTypes array of whitelisted types. Sighash type: ${str}`,
++      `sighashTypes array of whitelisted types. Sighash type: ${str}`,
+     );
+   }
+ }
+@@ -1455,19 +1476,37 @@ function getSignersFromHD(inputIndex, inputs, hdKeyPair) {
+ }
+ function getSortedSigs(script, partialSig) {
+   const p2ms = payments.p2ms({ output: script });
+-  // for each pubkey in order of p2ms script
+-  return p2ms.pubkeys
+-    .map(pk => {
+-      // filter partialSig array by pubkey being equal
+-      return (
+-        partialSig.filter(ps => {
+-          return ps.pubkey.equals(pk);
+-        })[0] || {}
+-      ).signature;
+-      // Any pubkey without a match will return undefined
+-      // this last filter removes all the undefined items in the array.
+-    })
+-    .filter(v => !!v);
++
++
++  if (!Psbt.ignoreVerifySig) {
++    // for each pubkey in order of p2ms script
++    return p2ms.pubkeys
++      .map(pk => {
++        // filter partialSig array by pubkey being equal
++        return (
++          partialSig.filter(ps => {
++            return ps.pubkey.equals(pk);
++          })[0] || {}
++        ).signature;
++        // Any pubkey without a match will return undefined
++        // this last filter removes all the undefined items in the array.
++      })
++      .filter(v => !!v);
++  } else {
++    if (!partialSig) {
++      const sim = '3045022100df036d1370d6c2dbcd1a86e52f7d13c976b18bb4caae38a97631deb1ef09fcb50220782ad9384a24e2fdf63a45256ed6b958526789381c11391b3c3a5b99ccf2448c01';
++      let ret = [];
++      for (let i = 0; i < p2ms.m; i++) {
++        ret.push(Buffer.from(sim, 'hex'));
++      }
++      return ret;
++    }
++    let ret = partialSig.map(ps => {
++      return ps.signature;
++    });
++    return ret.slice(0, p2ms.m);
++  }
++
+ }
+ function scriptWitnessToWitnessStack(buffer) {
+   let offset = 0;
+@@ -1692,10 +1731,10 @@ function getMeaningfulScript(
+     type: isP2SHP2WSH
+       ? 'p2sh-p2wsh'
+       : isP2SH
+-      ? 'p2sh'
+-      : isP2WSH
+-      ? 'p2wsh'
+-      : 'raw',
++        ? 'p2sh'
++        : isP2WSH
++          ? 'p2wsh'
++          : 'raw',
+   };
+ }
+ function checkInvalidP2WSH(script) {

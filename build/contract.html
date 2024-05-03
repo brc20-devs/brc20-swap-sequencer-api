@@ -1,0 +1,29 @@
+<script src="
+https://cdnjs.cloudflare.com/ajax/libs/bignumber.js/8.0.2/bignumber.min.js
+"></script>
+<script src="https://bundle.run/buffer@6.0.3"></script>
+
+<script src="./contract.js"></script>
+<script>
+    const assets = new Contract.AssetsClass({
+            swap: {},
+            pendingSwap: {},
+            module: {},
+            approve: {},
+            conditionalApprove: {}
+        });
+    const contract = new Contract.Contract(
+        assets,
+        {
+            kLast: {},
+        },
+        {
+            sequencer: "",
+            platformFeeOn: false,
+            swapFeeRate1000: "0",
+            platformFeeRate: "0",
+            feeTick: "sats",
+        })
+    contract.deployPool({address: "1", tick0: "ordi", tick1: "sats"})
+    console.log(contract.assets)
+</script>

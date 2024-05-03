@@ -1,0 +1,7 @@
+node_modules
+dist
+types
+*.ignore.*
+.eslintrc.cjs
+build
+script

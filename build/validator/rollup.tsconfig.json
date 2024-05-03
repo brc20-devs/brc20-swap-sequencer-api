@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "removeComments": true,
+    "importHelpers": true,
+    "module": "ESNext",
+    "target": "ES6",
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "sourceMap": false,
+    "declaration": false,
+    "paths": {
+      "bignumber.js": ["../../node_modules/bignumber.js/bignumber.js"],
+      "tslib": ["../../node_modules/tslib/tslib.d.ts"]
+    }
+  },
+  "include": ["../../src/contract/bn.ts"]
+}

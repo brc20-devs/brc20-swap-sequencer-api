@@ -1,0 +1,85 @@
+{
+  "config": {
+    "cors": false,
+    "db": "brc20-swap",
+    "localDebug": true,
+    "routeDebugLog": false,
+    "winstonDebugLog": true,
+    "fakeMarketPrice": false,
+    "fixedGasPrice": "",
+    "port": 3000,
+    "mongoUrl": "mongodb://127.0.0.1:27017/",
+    "openApi": {
+      "url": "https://open-api.unisat.io",
+      "apiKey": "YOUR-API-KEY"
+    },
+    "mempoolApi": "https://mempool.space/",
+    "network": "bitcoin",
+    "keyring": {
+      "sequencerWallet": {
+        "address": "bc1qlsk3s8jg6j4gxhe6mllrrq2gv7eq0ag7ctv6k0"
+      },
+      "rootWallet": {
+        "address": "bc1q5dp43ut7grv5tm9kfhdkdh037xtqwspatadwfv"
+      },
+      "btcWallet": {
+        "address": "bc1qw0dwa9j89l4snsprw3qffks9nnuvr5ust6f02p"
+      },
+      "approveWallet": {
+        "address": "bc1qswfagycpjwkmwksfs9lpunj26ldp20tfj07cv2"
+      }
+    },
+    "startHeight": 0,
+    "moduleId": "66801a4a8352e84ed8485ec231aee88c20983bf442aa04d398ac6c89c92abc8ci0",
+    "source": "93ce120ff87364c261a534fea4c39196a615f449412fb3547a185d92306a39b8i0",
+    "isContractOnChain": false,
+    "pendingWithdrawNum": 3,
+    "pendingRollupNum": 1,
+    "insertHeightNum": 11,
+    "openCommitPerMinute": true,
+    "commitPerMinute": 60,
+    "commitPerSize": 300,
+    "eventListPerSize": 1000,
+    "snapshotPerSize": 10,
+    "testWithdraw": false,
+    "enableApiUTXO": false,
+    "verifyCommit": true,
+    "verifyCommitInvalidException": false,
+    "verifyCommitCriticalException": false,
+    "verifyCommitFatalNum": 5,
+    "pendingDepositDirectNum": 10,
+    "pendingDepositMatchingNum": 3,
+    "pendingTransferNum": 3,
+    "commitFeeRateRatio": 1.2,
+    "userFeeRateRatio": 2,
+    "openWhitelistTick": true,
+    "isLocalTest": true,
+    "canSwap": false,
+    "userWhiteList": [],
+    "onlyUserWhiteList": false,
+    "whitelistTick": {
+      "sats": { "depositLimit": "200000000000", "withdrawLimit": "2500000000" },
+      "ordi": { "depositLimit": "200", "withdrawLimit": "20" },
+      "trac": { "depositLimit": "2000", "withdrawLimit": "150" },
+      "oshi": { "depositLimit": "20", "withdrawLimit": "1" },
+      "btcs": { "depositLimit": "20000", "withdrawLimit": "100" },
+      "oxbt": { "depositLimit": "200000", "withdrawLimit": "15000" },
+      "texo": { "depositLimit": "200000", "withdrawLimit": "1000" },
+      "cncl": { "depositLimit": "20", "withdrawLimit": "3" },
+      "meme": { "depositLimit": "200", "withdrawLimit": "10" },
+      "honk": { "depositLimit": "200000000", "withdrawLimit": "15000000" },
+      "zbit": { "depositLimit": "20000", "withdrawLimit": "1000" },
+      "vmpx": { "depositLimit": "20000", "withdrawLimit": "1000" },
+      "pepe": { "depositLimit": "20000", "withdrawLimit": "1000" },
+      "mxrc": { "depositLimit": "200000", "withdrawLimit": "10000" },
+      "rats": { "depositLimit": "200000000", "withdrawLimit": "15000000" },
+      "ghsy": { "depositLimit": "10000", "withdrawLimit": "1000" },
+      ".com": { "depositLimit": "2000", "withdrawLimit": "200" },
+      "mice": { "depositLimit": "100000", "withdrawLimit": "10000" },
+      "roup": { "depositLimit": "300000", "withdrawLimit": "30000" },
+      "turt": { "depositLimit": "100000", "withdrawLimit": "10000" },
+      "fcdp": { "depositLimit": "10", "withdrawLimit": "1" },
+      "quaq": { "depositLimit": "10000000", "withdrawLimit": "1000000" }
+    }
+  }
+}
