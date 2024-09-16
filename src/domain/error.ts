@@ -1,3 +1,5 @@
+import { BITCOIN_NAME } from "./constant";
+
 export enum CodeEnum {
   commiting = -2,
   user_insufficient_funds = -3,
@@ -17,9 +19,6 @@ export class CodeError extends Error {
     this.code = code;
   }
 }
-
-// The server error will be logged.
-export const server_error = "Server error";
 
 // The error occurred due to the user's abnormal operation, such as an invalid input.
 export const unauthorized_operation = "Unauthorized operation";
@@ -67,11 +66,12 @@ export const pending_transaction =
 export const access_denied = "Access denied";
 
 // This indicates that a critical error has occurred in the system, and it requires a shutdown for maintenance
-export const system_fatal_error = "System fatal error";
+export const system_fatal_error = "System Failure";
 
 // the rollup transaction is being recorded on the blockchain
 export const system_commit_in_progress_1 = "System commit in progress .";
 export const system_commit_in_progress_2 = "System commit in progress ..";
+export const system_commit_in_progress_3 = "System commit in progress ...";
 
 // The on-chain data is abnormal, such as a rollback occurred, prompting the need to rebuild the system state
 export const system_recovery_in_progress = "System recovery in progress";
@@ -98,12 +98,19 @@ export const withdraw_limit = "Less than the minimum cash withdrawal value";
 
 export const deposit_delay_swap = "Deposit in progress, please wait.";
 
-export const insufficient_btc = "Insufficient BTC balance";
+export const insufficient_btc = `Insufficient ${BITCOIN_NAME} balance`;
+
+export const insufficient_confirmed_btc = `Insufficient confirmed ${BITCOIN_NAME} balance`;
 
 export const duplicate_operation = "Duplicate operation.";
 
-export const cant_swap = "The current operation cannot perform a swap";
+export const cant_opt = "The current operation cannot perform";
 
 export const specified_address = "Only supports sending to a specified address";
 
 export const invalid_address = "Invalid address";
+
+export const indexer_error = "Index request error, please try again later.";
+
+export const wait_for_rollup =
+  "Waiting for the rollup inscription to be indexed and received";

@@ -7,8 +7,8 @@ import {
   CreateDepositRes,
   DepositType,
 } from "../types/route";
-import { MAX_HEIGHT } from "./constant";
-import { insufficient_btc } from "./error";
+import { PENDING_CURSOR, UNCONFIRM_HEIGHT } from "./constant";
+import { indexer_error, insufficient_btc } from "./error";
 import {
   checkAccess,
   checkAddressType,
@@ -50,6 +50,7 @@ export class Deposit {
     const utxos = getMinUTXOs(allUTXOs, 1, 1, feeRate);
 
     const vpsbt = new VPsbt();
+    need(!!inscription.utxo.scriptPk, indexer_error);
     vpsbt.addInput(utxoToInput(inscription.utxo, { pubkey })); //i0
     for (let i = 0; i < utxos.length; i++) {
       vpsbt.addInput(utxoToInput(utxos[i], { pubkey })); // i1
@@ -100,11 +101,12 @@ export class Deposit {
 
     const txid = tx.getId();
     const data: DepositData = {
+      cursor: PENDING_CURSOR,
       address: inscription.address,
       inscriptionId,
       tick: inscription.brc20.tick,
       amount: inscription.brc20.amt,
-      height: MAX_HEIGHT,
+      height: UNCONFIRM_HEIGHT,
       ts: Math.floor(Date.now() / 1000),
       txid,
       type,

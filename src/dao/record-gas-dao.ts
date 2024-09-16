@@ -4,7 +4,6 @@ import { BaseDao } from "./base-dao";
 export type RecordGasData = {
   id: string;
   address: string;
-  invalid?: boolean;
 } & GasHistoryItem;
 
 export class RecordGasDao extends BaseDao<RecordGasData> {

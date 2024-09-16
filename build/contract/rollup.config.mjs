@@ -22,6 +22,7 @@ export default {
         moduleDirectory: ['node_modules']
     }), replace({
         ' Buffer': " buffer.Buffer",
+        "${Buffer.from": "${buffer.Buffer.from",
         delimiters: ['', '']
     })],
     external: ['bignumber.js']

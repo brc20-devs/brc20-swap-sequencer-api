@@ -4,7 +4,6 @@ import { exceeding_slippage } from "../contract/contract";
 import {
   CodeEnum,
   internal_server_error,
-  server_error,
   unauthorized_operation,
 } from "../domain/error";
 import { fixTickCaseSensitive } from "../domain/utils";
@@ -21,6 +20,7 @@ export function wrap(fastify: FastifyInstance) {
       params: req.method == "POST" ? req.body : req.query,
       ip: req.ip,
       payload: null,
+      ht: Date.now() - (req as any).startTime,
     };
     (req as any).record = record;
 
@@ -28,7 +28,7 @@ export function wrap(fastify: FastifyInstance) {
 
     if (!!payload?.code && !!payload?.msg) {
       data = payload;
-    } else if (payload.openapi) {
+    } else if (payload?.openapi) {
       data = payload;
     } else if (res.statusCode == 200) {
       data = { code: 0, msg: "ok", data: payload };
@@ -42,8 +42,14 @@ export function wrap(fastify: FastifyInstance) {
         data: null,
       };
     }
-
     done(null, data);
+  });
+  fastify.addHook("onRequest", async (req, res) => {
+    const _req = req as any;
+    _req.startTime = Date.now();
+    _req.record = {
+      method: req.method,
+    };
   });
   fastify.setErrorHandler(function (err: any, req, res) {
     let code = err.code || -1;
@@ -52,7 +58,7 @@ export function wrap(fastify: FastifyInstance) {
     }
 
     let msg = (err.message || "") as string;
-    if (msg.includes(server_error)) {
+    if (msg.includes(internal_server_error)) {
       msg = unauthorized_operation;
     }
     if (msg.includes("Cannot read properties of undefined")) {
@@ -82,9 +88,9 @@ export function wrap(fastify: FastifyInstance) {
     }
     const filter = "quote";
     if (req.url.includes(filter)) {
-      logger.info(record);
+      // logger.info(record);
     } else {
-      logger.error(record);
+      logger.route(record);
     }
   });
 }

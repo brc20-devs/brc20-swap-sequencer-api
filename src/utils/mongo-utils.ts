@@ -4,6 +4,7 @@ import {
   CountDocumentsOptions,
   Filter,
   FindOptions,
+  IndexSpecification,
   InsertOneOptions,
   MongoClient,
   UpdateFilter,
@@ -21,12 +22,29 @@ export class MongoUtils {
     this.dbName = dbName;
   }
 
+  async startTransaction(action: Function) {
+    const session = this.client.startSession();
+    session.startTransaction();
+    try {
+      await action();
+    } catch (err) {
+      await session.abortTransaction();
+      throw err;
+    } finally {
+      await session.endSession();
+    }
+  }
+
   async init() {
     this.client = await MongoClient.connect(this.url, {
       useUnifiedTopology: true,
       minPoolSize: 20,
       maxPoolSize: 200,
     } as any);
+  }
+
+  async createIndex(tableName: string, indexSpec: IndexSpecification) {
+    return await this.client.db(this.dbName).createIndex(tableName, indexSpec);
   }
 
   count(

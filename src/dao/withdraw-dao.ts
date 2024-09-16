@@ -9,12 +9,15 @@ export type WithdrawStatus =
   | "completed"
   | "cancel";
 
+export type WithdrawType = "conditional" | "direct";
+
 export type WithdrawData = {
   id: string;
   rollUpHeight: number;
   approveHeight: number;
   cancelHeight: number;
   status: WithdrawStatus;
+  type: WithdrawType;
 
   pubkey: string;
   address: string;
@@ -39,27 +42,16 @@ export type WithdrawData = {
   inscribeTxid?: string;
   approveTxid?: string;
   errMsg?: string;
-  invalid?: boolean;
   failCount?: number;
   testFail?: boolean;
 } & PreRes;
 
 export class WithdrawDao extends BaseDao<WithdrawData> {
   upsertData(data: WithdrawData) {
-    return this.upsertOne(
-      { id: data.id, invalid: { $ne: true } },
-      { $set: data }
-    );
-  }
-
-  discardData(data: WithdrawData) {
-    return this.updateOne(
-      { id: data.id, invalid: { $ne: true } },
-      { $set: { invalid: true } }
-    );
+    return this.upsertOne({ id: data.id }, { $set: data });
   }
 
   findAll() {
-    return this.find({ invalid: { $ne: true } });
+    return this.find({});
   }
 }

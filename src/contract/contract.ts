@@ -21,10 +21,11 @@ import {
   checkGtZero,
   checkGteZero,
   checkSlippage,
-  getPairStr,
+  getPairStrV2,
   need,
   sortTickParams,
 } from "./contract-utils";
+import { Observer } from "./observer";
 
 export const exceeding_slippage = "exceeding slippage";
 export const duplicate_tick = "duplicate tick";
@@ -36,11 +37,17 @@ const feeOn = true;
 const feeRate = "6";
 
 export const AssetsClass = Assets;
+export type NotifyKlastData = { tick: string; value: string };
 
 export class Contract {
   readonly assets: Assets;
   readonly status: ContractStatus;
   readonly config: ContractConfig;
+
+  private observer: Observer;
+  setObserver(observer: Observer) {
+    this.observer = observer;
+  }
 
   constructor(assets: Assets, status: ContractStatus, config: ContractConfig) {
     this.assets = assets;
@@ -51,7 +58,7 @@ export class Contract {
   public deployPool(params: DeployPoolIn): DeployPoolOut {
     need(params.tick0 !== params.tick1, duplicate_tick);
 
-    const pair = getPairStr(params.tick0, params.tick1);
+    const pair = getPairStrV2(params.tick0, params.tick1);
     need(!this.assets.isExist(pair), pool_existed);
 
     this.assets.tryCreate(pair);
@@ -67,7 +74,7 @@ export class Contract {
     checkGteZero(expect);
     checkSlippage(slippage1000);
 
-    const pair = getPairStr(tick0, tick1);
+    const pair = getPairStrV2(tick0, tick1);
     const { address } = params;
     need(!!this.assets.isExist(pair), pool_not_found);
 
@@ -76,7 +83,7 @@ export class Contract {
       tick1,
     });
 
-    if (this.assets.get(pair).supply == "0") {
+    if (this.assets.get(pair).Supply == "0") {
       const lp = uintCal([amount0, "mul", amount1, "sqrt"]);
 
       // ensure there is always liquidity in the pool
@@ -107,6 +114,12 @@ export class Contract {
           "mul",
           this.assets.get(tick1).balanceOf(pair),
         ]);
+        if (this.observer) {
+          this.observer.notify<NotifyKlastData>("klast", {
+            tick: pair,
+            value: this.status.kLast[pair],
+          });
+        }
       }
 
       return { lp: firstLP, amount0, amount1 };
@@ -114,7 +127,7 @@ export class Contract {
       let amount0Adjust: string;
       let amount1Adjust: string;
 
-      const poolLp = this.assets.get(pair).supply;
+      const poolLp = this.assets.get(pair).Supply;
       const poolAmount0 = this.assets.get(tick0).balanceOf(pair);
       const poolAmount1 = this.assets.get(tick1).balanceOf(pair);
 
@@ -167,6 +180,12 @@ export class Contract {
           "mul",
           this.assets.get(tick1).balanceOf(pair),
         ]);
+        if (this.observer) {
+          this.observer.notify<NotifyKlastData>("klast", {
+            tick: pair,
+            value: this.status.kLast[pair],
+          });
+        }
       }
 
       return { lp, amount0: amount0Adjust, amount1: amount1Adjust };
@@ -187,10 +206,10 @@ export class Contract {
       tick1,
     });
 
-    const pair = getPairStr(tick0, tick1);
+    const pair = getPairStrV2(tick0, tick1);
     need(!!this.assets.isExist(pair), pool_not_found);
 
-    const poolLp = this.assets.get(pair).supply;
+    const poolLp = this.assets.get(pair).Supply;
     const reserve0 = this.assets.get(tick0).balanceOf(pair);
     const reserve1 = this.assets.get(tick1).balanceOf(pair);
     const acquire0 = uintCal([lp, "mul", reserve0, "div", poolLp]);
@@ -231,6 +250,12 @@ export class Contract {
         "mul",
         this.assets.get(tick1).balanceOf(pair),
       ]);
+      if (this.observer) {
+        this.observer.notify<NotifyKlastData>("klast", {
+          tick: pair,
+          value: this.status.kLast[pair],
+        });
+      }
     }
 
     return { tick0, tick1, amount0: acquire0, amount1: acquire1 };
@@ -251,7 +276,7 @@ export class Contract {
     checkGteZero(expect);
     checkSlippage(slippage1000);
 
-    const pair = getPairStr(tickIn, tickOut);
+    const pair = getPairStrV2(tickIn, tickOut);
     const reserveIn = this.assets.get(tickIn).balanceOf(pair);
     const reserveOut = this.assets.get(tickOut).balanceOf(pair);
 
@@ -354,7 +379,7 @@ export class Contract {
   getFeeLp(params: MintFeeIn) {
     const { tick0, tick1 } = params;
 
-    const pair = getPairStr(tick0, tick1);
+    const pair = getPairStrV2(tick0, tick1);
     const reserve0 = this.assets.get(tick0).balanceOf(pair);
     const reserve1 = this.assets.get(tick1).balanceOf(pair);
 
@@ -364,7 +389,7 @@ export class Contract {
         const rootKLast = uintCal([this.status.kLast[pair], "sqrt"]);
         if (bn(rootK).gt(rootKLast)) {
           const numerator = uintCal([
-            this.assets.get(pair).supply,
+            this.assets.get(pair).Supply,
             "mul",
             uintCal([rootK, "sub", rootKLast]),
           ]);
@@ -382,7 +407,7 @@ export class Contract {
 
   private mintFee(params: MintFeeIn) {
     const { tick0, tick1 } = params;
-    const pair = getPairStr(tick0, tick1);
+    const pair = getPairStrV2(tick0, tick1);
     if (feeOn) {
       const liquidity = this.getFeeLp(params);
       if (bn(liquidity).gt("0")) {
@@ -390,6 +415,12 @@ export class Contract {
       }
     } else {
       this.status.kLast[pair] = "0";
+      if (this.observer) {
+        this.observer.notify<NotifyKlastData>("klast", {
+          tick: pair,
+          value: this.status.kLast[pair],
+        });
+      }
     }
   }
 }

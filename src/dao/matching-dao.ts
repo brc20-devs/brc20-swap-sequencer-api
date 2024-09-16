@@ -10,7 +10,6 @@ export type MatchingData = {
   transferAddress: string;
   txid: string;
   ts: number;
-  invalid?: boolean;
   rollback?: boolean;
 };
 
@@ -26,7 +25,7 @@ export class MatchingDao extends BaseDao<MatchingData> {
   }
 
   findAll() {
-    return this.find({ invalid: { $ne: true } });
+    return this.find({});
   }
 
   async findLastOneByApproveId(approveInscriptionId: string) {

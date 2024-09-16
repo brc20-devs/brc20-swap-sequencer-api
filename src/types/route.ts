@@ -10,7 +10,7 @@ import {
 import { MatchingData } from "../dao/matching-dao";
 import { RecordLiqData } from "../dao/record-liq-dao";
 import { RecordSwapData } from "../dao/record-swap-dao";
-import { WithdrawStatus } from "../dao/withdraw-dao";
+import { WithdrawStatus, WithdrawType } from "../dao/withdraw-dao";
 import { ExactType, FuncType } from "./func";
 
 export type Req<T, T2> = T2 extends "post"
@@ -63,7 +63,7 @@ export type AllAddressBalanceRes = {
   [key: string]: {
     balance: AddressBalance;
     decimal: string;
-    withdrawLimit: string;
+    // withdrawLimit: string;
   };
 };
 
@@ -210,6 +210,10 @@ export type FuncReq =
     }
   | {
       func: FuncType.send;
+      req: SendReq;
+    }
+  | {
+      func: FuncType.sendLp;
       req: SendReq;
     };
 
@@ -442,7 +446,7 @@ export type WithdrawHistoryReq = {
   limit: number;
 };
 
-export type WithdrawHistoryItem = {
+export type ConditionalWithdrawHistoryItem = {
   id: string;
   tick: string;
   totalAmount: string;
@@ -451,14 +455,15 @@ export type WithdrawHistoryItem = {
   totalConfirmedNum: number;
   totalNum: number;
   status: WithdrawStatus;
+  type: WithdrawType;
 };
 
 export type WithdrawHistoryRes = {
   total: number;
-  list: WithdrawHistoryItem[];
+  list: ConditionalWithdrawHistoryItem[];
 };
 
-export type CreateWithdrawReq = {
+export type CreateConditionalWithdrawReq = {
   pubkey: string;
   address: string;
   tick: string;
@@ -466,19 +471,34 @@ export type CreateWithdrawReq = {
   ts: number;
 };
 
-export type CreateWithdrawRes = {
+export type CreateConditionalWithdrawRes = {
   id: string;
   paymentPsbt: string;
   approvePsbt: string;
   networkFee: number;
 } & PreRes;
 
-export type ConfirmWithdrawReq = {
+export type CreateDirectWithdrawReq = {
+  pubkey: string;
+  address: string;
+  tick: string;
+  amount: string;
+  ts: number;
+};
+
+export type ConfirmDirectWithdrawReq = {
   id: string;
   sig: string;
   paymentPsbt: string;
   approvePsbt: string;
 };
+
+export type CreateDirectWithdrawRes = {
+  id: string;
+  paymentPsbt: string;
+  approvePsbt: string;
+  networkFee: number;
+} & PreRes;
 
 export type ConfirmWithdrawRes = {};
 

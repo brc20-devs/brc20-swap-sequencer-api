@@ -137,7 +137,6 @@ export type StatusStatusRes = {
   withdrawNum: number;
   withdrawErrorNum: number;
   lastAggregateTimestamp: number;
-  rebuildFailCount: number;
   apiStatistic: {
     [key: string]: {
       min: number;

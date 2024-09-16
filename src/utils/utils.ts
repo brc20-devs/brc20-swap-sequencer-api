@@ -35,7 +35,7 @@ export function schema(
   };
 
   const getResponse = () => {
-    if (_res && config.isLocalTest) {
+    if (_res && config.openSwagger) {
       return {
         response: {
           200: {
@@ -106,20 +106,28 @@ export function getTodayMidnightSec() {
   return todayMidnightSec;
 }
 
-export function printErr(tag: string, err) {
+export function loggerError(tag: string, err) {
   if (err instanceof AxiosError) {
     logger.error({
       tag,
-      message: err.message,
+      msg: "",
+      error: err.message,
       url: err.config.url,
     });
   } else {
     logger.error({
       tag,
-      message: err.message,
+      msg: "",
+      error: err.message,
       stack: err.stack,
     });
   }
+}
+
+export function sleep(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 export function isNetWorkError(err) {

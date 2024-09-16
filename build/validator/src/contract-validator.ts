@@ -1,8 +1,8 @@
-import _ from "lodash";
 import { Assets } from "../../../src/contract/assets";
 import { bn, bnDecimal, bnUint, decimalCal } from "../../../src/contract/bn";
 import {
-  getPairStr,
+  getPairStrV2,
+  getPairStructV2,
   need,
   sortTickParams,
 } from "../../../src/contract/contract-utils";
@@ -20,6 +20,7 @@ import {
   InternalFunc,
   RemoveLiqParams,
   Result,
+  SendParams,
   SwapParams,
 } from "../../../src/types/func";
 import {
@@ -34,20 +35,7 @@ import {
 import { Contract } from "../../../src/contract/contract";
 import { Decimal } from "./decimal";
 
-function checkOpEvent(event: OpEvent) {
-  const events = [
-    EventType.approve,
-    EventType.commit,
-    EventType.conditionalApprove,
-    EventType.inscribeApprove,
-    EventType.inscribeConditionalApprove,
-    EventType.inscribeModule,
-    EventType.transfer,
-  ];
-  if (!events.includes(event.event)) {
-    throw new Error("unsupported op: " + event.event);
-  }
-}
+const updateHeight1 = 1;
 
 export class ContractValidator {
   private contract: Contract;
@@ -78,7 +66,8 @@ export class ContractValidator {
 
   private convertFuncInscription2Internal(
     index: number,
-    op: CommitOp
+    op: CommitOp,
+    height: number
   ): InternalFunc {
     const target = op.data[index];
     const address = target.addr;
@@ -124,71 +113,145 @@ export class ContractValidator {
       };
     } else if (lastFunc.func == FuncType.addLiq) {
       const params = lastFunc.params as AddLiqParams;
-      const pair = this.getPairStruct(params[0]);
-      const decimal0 = this.decimal.get(pair.tick0);
-      const decimal1 = this.decimal.get(pair.tick1);
-      return {
-        id,
-        func: lastFunc.func,
-        params: {
-          address: lastFunc.addr,
-          tick0: pair.tick0,
-          tick1: pair.tick1,
-          amount0: bnUint(params[1], decimal0),
-          amount1: bnUint(params[2], decimal1),
-          expect: bnUint(params[3], LP_DECIMAL),
-          slippage1000: bnUint(params[4], "3"),
-        },
-        prevs,
-        ts: lastFunc.ts,
-        sig: lastFunc.sig,
-      };
+
+      if (height < updateHeight1) {
+        const pair = this.getPairStruct(params[0]);
+        const decimal0 = this.decimal.get(pair.tick0);
+        const decimal1 = this.decimal.get(pair.tick1);
+        return {
+          id,
+          func: lastFunc.func,
+          params: {
+            address: lastFunc.addr,
+            tick0: pair.tick0,
+            tick1: pair.tick1,
+            amount0: bnUint(params[1], decimal0),
+            amount1: bnUint(params[2], decimal1),
+            expect: bnUint(params[3], LP_DECIMAL),
+            slippage1000: bnUint(params[4], "3"),
+          },
+          prevs,
+          ts: lastFunc.ts,
+          sig: lastFunc.sig,
+        };
+      } else {
+        const tick0 = params[0];
+        const tick1 = params[1];
+        const decimal0 = this.decimal.get(tick0);
+        const decimal1 = this.decimal.get(tick1);
+        return {
+          id,
+          func: lastFunc.func,
+          params: {
+            address: lastFunc.addr,
+            tick0,
+            tick1,
+            amount0: bnUint(params[2], decimal0),
+            amount1: bnUint(params[3], decimal1),
+            expect: bnUint(params[4], LP_DECIMAL),
+            slippage1000: bnUint(params[5], "3"),
+          },
+          prevs,
+          ts: lastFunc.ts,
+          sig: lastFunc.sig,
+        };
+      }
     } else if (lastFunc.func == FuncType.swap) {
-      const params = lastFunc.params as SwapParams;
-      const pair = this.getPairStruct(params[0]);
-      const decimal0 = this.decimal.get(pair.tick0);
-      const decimal1 = this.decimal.get(pair.tick1);
-      const expectDecimal = params[1] == pair.tick0 ? decimal1 : decimal0;
-      const exactType = params[3] as ExactType;
-      const tick = params[1];
-      const tickOther = params[1] == pair.tick0 ? pair.tick1 : pair.tick0;
-      return {
-        id,
-        func: lastFunc.func,
-        params: {
-          address: lastFunc.addr,
-          tickIn: exactType == ExactType.exactIn ? tick : tickOther,
-          tickOut: exactType == ExactType.exactOut ? tick : tickOther,
-          amount: bnUint(params[2], this.decimal.get(params[1])),
-          exactType,
-          expect: bnUint(params[4], expectDecimal),
-          slippage1000: bnUint(params[5], "3"),
-        },
-        prevs,
-        ts: lastFunc.ts,
-        sig: lastFunc.sig,
-      };
+      const params = lastFunc.params as string[];
+      if (height < updateHeight1) {
+        const pair = this.getPairStruct(params[0]);
+        const decimal0 = this.decimal.get(pair.tick0);
+        const decimal1 = this.decimal.get(pair.tick1);
+        const expectDecimal = params[1] == pair.tick0 ? decimal1 : decimal0;
+        const exactType = params[3] as ExactType;
+        const tick = params[1];
+        const tickOther = params[1] == pair.tick0 ? pair.tick1 : pair.tick0;
+        return {
+          id,
+          func: lastFunc.func,
+          params: {
+            address: lastFunc.addr,
+            tickIn: exactType == ExactType.exactIn ? tick : tickOther,
+            tickOut: exactType == ExactType.exactOut ? tick : tickOther,
+            amount: bnUint(params[2], this.decimal.get(params[1])),
+            exactType,
+            expect: bnUint(params[4], expectDecimal),
+            slippage1000: bnUint(params[5], "3"),
+          },
+          prevs,
+          ts: lastFunc.ts,
+          sig: lastFunc.sig,
+        };
+      } else {
+        const tick0 = params[0];
+        const tick1 = params[1];
+        const decimal0 = this.decimal.get(tick0);
+        const decimal1 = this.decimal.get(tick1);
+        const expectDecimal = params[2] == tick0 ? decimal1 : decimal0;
+        const exactType = params[4] as ExactType;
+        const tick = params[2];
+        const tickOther = params[2] == tick0 ? tick1 : tick0;
+        return {
+          id,
+          func: lastFunc.func,
+          params: {
+            address: lastFunc.addr,
+            tickIn: exactType == ExactType.exactIn ? tick : tickOther,
+            tickOut: exactType == ExactType.exactOut ? tick : tickOther,
+            amount: bnUint(params[3], this.decimal.get(params[1])),
+            exactType,
+            expect: bnUint(params[5], expectDecimal),
+            slippage1000: bnUint(params[6], "3"),
+          },
+          prevs,
+          ts: lastFunc.ts,
+          sig: lastFunc.sig,
+        };
+      }
     } else if (lastFunc.func == FuncType.removeLiq) {
-      const params = lastFunc.params as RemoveLiqParams;
-      const pair = this.getPairStruct(params[0]);
-      const decimal0 = this.decimal.get(pair.tick0);
-      const decimal1 = this.decimal.get(pair.tick1);
-      return {
-        id,
-        func: lastFunc.func,
-        params: {
-          address: lastFunc.addr,
-          tick0: pair.tick0,
-          tick1: pair.tick1,
-          lp: bnUint(params[1], LP_DECIMAL),
-          amount0: bnUint(params[2], decimal0),
-          amount1: bnUint(params[3], decimal1),
-          slippage1000: bnUint(params[4], "3"),
-        },
-        prevs,
-        ts: lastFunc.ts,
-        sig: lastFunc.sig,
-      };
+      const params = lastFunc.params as string[];
+      if (height < updateHeight1) {
+        const pair = this.getPairStruct(params[0]);
+        const decimal0 = this.decimal.get(pair.tick0);
+        const decimal1 = this.decimal.get(pair.tick1);
+        return {
+          id,
+          func: lastFunc.func,
+          params: {
+            address: lastFunc.addr,
+            tick0: pair.tick0,
+            tick1: pair.tick1,
+            lp: bnUint(params[1], LP_DECIMAL),
+            amount0: bnUint(params[2], decimal0),
+            amount1: bnUint(params[3], decimal1),
+            slippage1000: bnUint(params[4], "3"),
+          },
+          prevs,
+          ts: lastFunc.ts,
+          sig: lastFunc.sig,
+        };
+      } else {
+        const tick0 = params[0];
+        const tick1 = params[1];
+        const decimal0 = this.decimal.get(tick0);
+        const decimal1 = this.decimal.get(tick1);
+        return {
+          id,
+          func: lastFunc.func,
+          params: {
+            address: lastFunc.addr,
+            tick0,
+            tick1,
+            lp: bnUint(params[2], LP_DECIMAL),
+            amount0: bnUint(params[3], decimal0),
+            amount1: bnUint(params[4], decimal1),
+            slippage1000: bnUint(params[5], "3"),
+          },
+          prevs,
+          ts: lastFunc.ts,
+          sig: lastFunc.sig,
+        };
+      }
     } else if (lastFunc.func == FuncType.decreaseApproval) {
       const params = lastFunc.params as DecreaseApprovalParams;
       const tick = params[0];
@@ -205,10 +268,49 @@ export class ContractValidator {
         ts: lastFunc.ts,
         sig: lastFunc.sig,
       };
+    } else if (lastFunc.func == FuncType.send) {
+      const params = lastFunc.params as SendParams;
+      const tick = params[1];
+      const amount = params[2];
+      return {
+        id,
+        func: lastFunc.func,
+        params: {
+          address: lastFunc.addr,
+          from: lastFunc.addr,
+          to: params[0],
+          tick,
+          amount: bnUint(amount, this.decimal.get(tick)),
+        },
+        prevs,
+        ts: lastFunc.ts,
+        sig: lastFunc.sig,
+      };
+    } else if (lastFunc.func == FuncType.sendLp) {
+      const params = lastFunc.params as SendParams;
+      const tick = params[1];
+      const amount = params[2];
+      return {
+        id,
+        func: lastFunc.func,
+        params: {
+          address: lastFunc.addr,
+          from: lastFunc.addr,
+          to: params[0],
+          tick,
+          amount: bnUint(amount, this.decimal.get(tick)),
+        },
+        prevs,
+        ts: lastFunc.ts,
+        sig: lastFunc.sig,
+      };
     }
   }
 
-  private convertFuncInternal2Inscription(func: InternalFunc): InscriptionFunc {
+  private convertFuncInternal2Inscription(
+    func: InternalFunc,
+    height: number
+  ): InscriptionFunc {
     if (func.func == FuncType.deployPool) {
       const params = sortTickParams(func.params);
       return {
@@ -225,7 +327,7 @@ export class ContractValidator {
         id: func.id,
         func: func.func,
         params: [
-          getPairStr(params.tick0, params.tick1),
+          getPairStrV2(params.tick0, params.tick1),
           bnDecimal(params.amount0, this.decimal.get(params.tick0)),
           bnDecimal(params.amount1, this.decimal.get(params.tick1)),
           bnDecimal(params.expect, LP_DECIMAL),
@@ -247,7 +349,7 @@ export class ContractValidator {
         id: func.id,
         func: func.func,
         params: [
-          getPairStr(params.tickIn, params.tickOut),
+          getPairStrV2(params.tickIn, params.tickOut),
           tick,
           bnDecimal(params.amount, this.decimal.get(tick)),
           params.exactType,
@@ -264,7 +366,7 @@ export class ContractValidator {
         id: func.id,
         func: func.func,
         params: [
-          getPairStr(params.tick0, params.tick1),
+          getPairStrV2(params.tick0, params.tick1),
           bnDecimal(params.lp, LP_DECIMAL),
           bnDecimal(params.amount0, this.decimal.get(params.tick0)),
           bnDecimal(params.amount1, this.decimal.get(params.tick1)),
@@ -308,6 +410,8 @@ export class ContractValidator {
       }
 
       const event: OpEvent = {
+        cursor: i,
+        valid: true,
         event: item.type,
         height: item.height,
         from: item.from,
@@ -325,16 +429,6 @@ export class ContractValidator {
           (event.op as any).tick
         );
       }
-
-      need(
-        [
-          OpType.approve,
-          OpType.commit,
-          OpType.conditionalApprove,
-          OpType.deploy,
-          OpType.transfer,
-        ].includes(event.op.op)
-      );
 
       if (event.op.op == OpType.deploy) {
         need(!!event.op.init.sequencer);
@@ -373,12 +467,17 @@ export class ContractValidator {
       } else if (event.op.op == OpType.commit) {
         for (let j = 0; j < event.op.data.length; j++) {
           try {
-            const func = this.convertFuncInscription2Internal(j, event.op);
+            const func = this.convertFuncInscription2Internal(
+              j,
+              event.op,
+              event.height
+            );
             this.aggregate(
               func,
               parseFloat(event.op.gas_price),
               event.inscriptionId,
-              j
+              j,
+              event.height
             );
           } catch (err) {
             console.log(event.op.data[j]);
@@ -413,11 +512,17 @@ export class ContractValidator {
     func: InternalFunc,
     gasPrice: number,
     commit: string,
-    index: number
+    index: number,
+    height: number
   ) {
-    const funcLength = this.getFuncInternalLength(
-      this.convertFuncInternal2Inscription(func)
-    );
+    let funcLength: number;
+    if (height < updateHeight1) {
+      funcLength = this.getFuncInternalLength(
+        this.convertFuncInternal2Inscription(func, height)
+      );
+    } else {
+      funcLength = 1;
+    }
     const gasTick = this.moduleInitParams.gas_tick;
     const amount = this.calculateServerFee(gasPrice, funcLength);
     const sendParams = {
@@ -436,6 +541,8 @@ export class ContractValidator {
     let out: ContractResult["out"];
     if (func.func == FuncType.deployPool) {
       out = this.contract.deployPool(func.params);
+      this.contract.assets.tryCreate(func.params.tick0);
+      this.contract.assets.tryCreate(func.params.tick1);
     } else if (func.func == FuncType.addLiq) {
       out = this.contract.addLiq(func.params);
     } else if (func.func == FuncType.swap) {
@@ -458,7 +565,12 @@ export class ContractValidator {
   }
 
   isLp(tick: string) {
-    return Buffer.from(tick).length == 9 && tick[4] == "/";
+    try {
+      const pair = getPairStructV2(tick);
+      return getPairStrV2(pair.tick0, pair.tick1) == tick;
+    } catch (err) {
+      return false;
+    }
   }
 
   genResult(params?: { commit: string; function: number }) {
@@ -473,7 +585,7 @@ export class ContractValidator {
 
       if (this.isLp(tick)) {
         const pair = tick;
-        const { tick0, tick1 } = this.getPairStruct(pair);
+        const { tick0, tick1 } = getPairStructV2(pair);
 
         let reserve1 = "0";
         let reserve0 = "0";
@@ -495,7 +607,15 @@ export class ContractValidator {
           pair: tick,
           reserve0,
           reserve1,
-          lp: bnDecimal(assets.get(pair).supply, LP_DECIMAL),
+          lp: bnDecimal(assets.get(pair).Supply, LP_DECIMAL),
+        });
+      }
+
+      if (!brc20.balance["0"]) {
+        data.users.push({
+          address: "0",
+          tick,
+          balance: "0",
         });
       }
 
@@ -519,25 +639,35 @@ export class ContractValidator {
       data["commit"] = params.commit;
       data["function"] = params.function;
     }
+
+    data.users?.sort((a, b) => {
+      if (a.tick < b.tick) {
+        return -1;
+      }
+      if (a.tick > b.tick) {
+        return 1;
+      }
+      if (a.address < b.address) {
+        return -1;
+      }
+      if (a.address > b.address) {
+        return 1;
+      }
+      return 0;
+    });
+    data.pools?.sort((a, b) => {
+      if (a.pair < b.pair) {
+        return 1;
+      } else if (a.pair > b.pair) {
+        return -1;
+      } else {
+        return 0;
+      }
+    });
     return data;
   }
 
-  verify(finalResultData) {
-    // const fs = require("fs");
-    // const path = require("path");
-    // fs.writeFileSync(
-    //   path.join(__dirname, "../result-expect.ignore.json"),
-    //   JSON.stringify(finalResultData)
-    // );
-    // fs.writeFileSync(
-    //   path.join(__dirname, "../result-real.ignore.json"),
-    //   JSON.stringify(this.genResult())
-    // );
-    // expect(this.genResult()).to.deep.eq(finalResultData);
-
-    /**
-     * @node  maybe neet to replace sequencer
-     */
-    return _.isEqual(this.genResult(), finalResultData);
+  verify(expectResult) {
+    return JSON.stringify(this.genResult()) == JSON.stringify(expectResult);
   }
 }

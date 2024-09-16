@@ -22,7 +22,7 @@ export function managerRoute(fastify: FastifyInstance, opts, done) {
       for (let i = 0; i < list.length; i++) {
         const item = list[i];
         item.status = newStatus;
-        await withdraw.update(item);
+        await conditionalWithdraw.update(item);
       }
       void res.send({});
     }

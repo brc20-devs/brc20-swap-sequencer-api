@@ -24,6 +24,7 @@ export default {
     }), replace({
         'global.contract': "global.Contract",
         ' Buffer': " buffer.Buffer",
+        "${Buffer.from": "${buffer.Buffer.from",
         delimiters: ['', '']
     })],
     external: ['bignumber.js', 'lodash', '../../contract'],

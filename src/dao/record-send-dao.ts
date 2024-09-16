@@ -11,7 +11,6 @@ export type RecordSendData = {
   preResult: Result;
   result: Result;
   ts: number;
-  invalid?: boolean;
 };
 
 export class RecordSendDao extends BaseDao<RecordSendData> {

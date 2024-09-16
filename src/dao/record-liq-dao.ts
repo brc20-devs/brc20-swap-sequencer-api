@@ -8,7 +8,6 @@ export type RecordLiqData = {
   address: string;
   preResult: Result;
   result: Result;
-  invalid?: boolean;
 } & LiqHistoryItem;
 
 export class RecordLiqDao extends BaseDao<RecordLiqData> {

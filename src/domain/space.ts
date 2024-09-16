@@ -1,78 +1,135 @@
 import _ from "lodash";
-import hash from "object-hash";
 import { Assets } from "../contract/assets";
 import { bn, bnDecimal, bnUint, decimalCal } from "../contract/bn";
+import { Brc20 } from "../contract/brc20";
 import { Contract } from "../contract/contract";
 import {
-  getPairStr,
-  getPairStruct,
+  getPairStrV2,
+  getPairStructV2,
   sortTickParams,
 } from "../contract/contract-utils";
 import { EventType } from "../types/api";
-import { AddressBalance, ContractConfig, SpaceSnapshot } from "../types/domain";
+import { AddressBalance, ContractConfig, SnapshotObj } from "../types/domain";
 import { ContractResult, FuncType, InternalFunc, Result } from "../types/func";
 import {
   ApproveOp,
   CommitOp,
   ConditionalApproveOp,
   OpEvent,
+  OpType,
   TransferOp,
+  WithdrawOp,
 } from "../types/op";
-import {
-  AllAddressBalanceRes,
-  PoolInfoReq,
-  SelectReq,
-  SelectRes,
-} from "../types/route";
-import { printErr } from "../utils/utils";
-import { AssetsChecker } from "./assets-checker";
+import { PENDING_CURSOR, UNCONFIRM_HEIGHT } from "./constant";
 import {
   convertFuncInscription2Internal,
   convertFuncInternal2Inscription,
   convertResultToDecimal,
 } from "./convert-struct";
-import { EventsChecker } from "./events-checker";
+import { AssetProcessing, NotifyDataCollector } from "./nofity-data-collector";
 import {
   checkOpEvent,
   checkTick,
+  cloneSnapshot,
   getConfirmedNum,
   getFuncInternalLength,
   hasFuncType,
   isLp,
-  isMatch,
   need,
+  sysFatal,
 } from "./utils";
 
+const TAG = "space";
+
+export enum SpaceType {
+  snapshot = "snapshot",
+  confirmed = "confirmed",
+  mempool = "mempool", // unconfirmed
+  pending = "pending",
+}
+
 export class Space {
-  readonly eventsChecker: EventsChecker = new EventsChecker();
   private assets: Assets;
-  private assetsChecker: AssetsChecker;
   private contract: Contract;
   private pendingEvent: OpEvent[] = [];
+  private lastHandledApiEvent: OpEvent;
+  private notifyDataCollector: NotifyDataCollector;
   private lastCommitId: string;
+  private spaceType: SpaceType;
 
-  constructor(_snapshot: SpaceSnapshot, _contractConfig: ContractConfig) {
-    const snapshot = _.cloneDeep(_snapshot);
-    const contractConfig = _.cloneDeep(_contractConfig);
+  get SpaceType() {
+    return this.spaceType;
+  }
+
+  get NotifyDataCollector() {
+    return this.notifyDataCollector;
+  }
+
+  get AssetsObj() {
+    return this.assets;
+  }
+
+  get ContractObj() {
+    return this.contract;
+  }
+
+  get LastCommitId() {
+    return this.lastCommitId;
+  }
+
+  get LastHandledApiEvent() {
+    return this.lastHandledApiEvent;
+  }
+
+  constructor(
+    snapshot: SnapshotObj,
+    contractConfig: ContractConfig,
+    lastCommitId: string,
+    lastHandledEvent: OpEvent,
+    createNotifyDataCollector: boolean,
+    spaceType: SpaceType
+  ) {
+    need(!!lastCommitId || lastCommitId == "");
+    need(!snapshot.used);
+    snapshot.used = true;
+    this.lastCommitId = lastCommitId;
+    this.lastHandledApiEvent = lastHandledEvent;
+    this.spaceType = spaceType;
 
     const Contract = contractLoader.getClass();
     this.assets = new Assets(snapshot.assets);
-    this.assetsChecker = new AssetsChecker(snapshot.assetsCheck);
     this.contract = new Contract(
       this.assets,
       snapshot.contractStatus,
       contractConfig
     );
+
+    if (createNotifyDataCollector) {
+      this.notifyDataCollector = new NotifyDataCollector(
+        this.lastHandledApiEvent?.cursor || 0
+      );
+
+      /****************************************
+       * collector processing:
+       * 1. collect data
+       * 2. data processing (option)
+       * 3. cursor++
+       ****************************************/
+
+      /*1*/ this.assets.setObserver(this.notifyDataCollector.Observer);
+      this.contract.setObserver(this.notifyDataCollector.Observer);
+    }
+  }
+
+  setLastCommitId(commitId: string) {
+    this.lastCommitId = commitId;
   }
 
   private updatePending() {
     let newPendingEvent = [];
     for (let i = 0; i < this.pendingEvent.length; i++) {
       const event = this.pendingEvent[i];
-
       checkOpEvent(event);
-
-      // TODO: check inscription exist
 
       if (event.event == EventType.transfer) {
         const op = event.op as TransferOp;
@@ -91,6 +148,9 @@ export class Space {
         } else {
           newPendingEvent.push(event);
         }
+      } else if (event.event == EventType.withdraw) {
+        // const op = event.op as WithdrawOp;
+        //
       } else if (
         event.event == EventType.approve ||
         event.event == EventType.conditionalApprove
@@ -144,7 +204,7 @@ export class Space {
     this.pendingEvent = newPendingEvent;
   }
 
-  async tick() {
+  tick() {
     this.updatePending();
   }
 
@@ -156,10 +216,19 @@ export class Space {
     return this.contract;
   }
 
-  aggregate(func: InternalFunc, gasPrice: string): ContractResult {
-    const funcLength = getFuncInternalLength(
-      convertFuncInternal2Inscription(func)
-    );
+  aggregate(
+    func: InternalFunc,
+    gasPrice: string,
+    height: number
+  ): ContractResult {
+    let funcLength: number;
+    if (height < config.updateHeight1) {
+      funcLength = getFuncInternalLength(
+        convertFuncInternal2Inscription(func, height)
+      );
+    } else {
+      funcLength = 1;
+    }
     const { gas_tick, gas_to } = env.ModuleInitParams;
     const gas = decimalCal([gasPrice, "mul", funcLength]);
     const sendParams = {
@@ -194,10 +263,12 @@ export class Space {
         this.assets.convert(address, tick, amount, "swap", "pendingAvailable");
         out = { id: func.id };
       } catch (err) {
-        logger.error({ tag: "decrease-approval", func });
+        logger.error({ tag: TAG, msg: "decrease-approval", func });
         throw err;
       }
     } else if (func.func == FuncType.send) {
+      out = this.contract.send(func.params);
+    } else if (func.func == FuncType.sendLp) {
       out = this.contract.send(func.params);
     }
     const result = this.getCurResult(func);
@@ -214,13 +285,13 @@ export class Space {
     const getBalance = (address: string, tick: string) => {
       return this.assets.getAggregateBalance(address, tick, [
         "swap",
-        "pendingSwap",
+        // "pendingSwap",
       ]);
     };
 
     // user, pool, sequencer balance
     const getPartialResult = (address: string, pair: string): Result => {
-      const { tick0, tick1 } = getPairStruct(pair);
+      const { tick0, tick1 } = getPairStructV2(pair);
       const ret: Result = {
         users: [
           {
@@ -249,7 +320,7 @@ export class Space {
             pair,
             reserve0: getBalance(pair, tick0),
             reserve1: getBalance(pair, tick1),
-            lp: this.assets.get(pair)?.supply || "0",
+            lp: this.assets.get(pair)?.Supply || "0",
           },
         ],
       };
@@ -270,11 +341,11 @@ export class Space {
       func.func == FuncType.removeLiq
     ) {
       const { address, tick0, tick1 } = func.params;
-      const pair = getPairStr(tick0, tick1);
+      const pair = getPairStrV2(tick0, tick1);
       result = getPartialResult(address, pair);
     } else if (func.func == FuncType.swap) {
       const { address, tickIn, tickOut } = func.params;
-      const pair = getPairStr(tickIn, tickOut);
+      const pair = getPairStrV2(tickIn, tickOut);
       result = getPartialResult(address, pair);
     } else if (func.func == FuncType.decreaseApproval) {
       const { address, tick } = func.params;
@@ -332,112 +403,38 @@ export class Space {
     return convertResultToDecimal(result);
   }
 
-  handleOpEvent(event: OpEvent): ContractResult[] {
+  private /** @note must sync */ __handleOpEvent(
+    event: OpEvent
+  ): ContractResult[] {
     let ret: ContractResult[] = null;
-
-    /**
-     * @note The order of events may change, so the cursor may not be accurate
-     */
-    const result = this.eventsChecker.getEventResult(event);
-    if (result !== undefined) {
-      return result;
-    }
-
-    // when inscribe approve, the balance may has not been converted yet
-    this.updatePending();
-
     if (event.event == EventType.transfer) {
       const op = event.op as TransferOp;
-      try {
-        this.assetsChecker.checkTransfer(event.inscriptionId, op.amt);
-      } catch (err) {
-        if (inited) {
-          // There may be duplicate processing during the startup process due to the disorder of op_list relative to op_confirm. [1]
-          throw err;
-        } else {
-          return;
-        }
-      }
-
       const amountInt = bnUint(op.amt, decimal.get(op.tick));
       this.assets.mint(event.from, op.tick, amountInt, "pendingSwap");
       this.pendingEvent.push(event);
+    } else if (event.event == EventType.withdraw) {
+      const op = event.op as WithdrawOp;
+      const amountInt = bnUint(op.amt, decimal.get(op.tick));
+      this.assets.burn(event.from, op.tick, amountInt, "available");
     } else if (event.event == EventType.approve) {
       const op = event.op as ApproveOp;
-      try {
-        this.assetsChecker.checkApprove(event.inscriptionId, op.amt);
-      } catch (err) {
-        if (inited) {
-          // same as [1]
-          throw err;
-        } else {
-          return;
-        }
-      }
-
       const amountInt = bnUint(event.data.amount, decimal.get(op.tick));
       this.assets.burn(event.from, op.tick, amountInt, "approve");
       this.assets.mint(event.to, op.tick, amountInt, "pendingSwap");
       this.pendingEvent.push(event);
     } else if (event.event == EventType.conditionalApprove) {
       const op = event.op as ConditionalApproveOp;
-      if (bn(event.data.amount).gt("0")) {
-        try {
-          this.assetsChecker.checkConditionalApprove(
-            event.inscriptionId,
-            event.data.amount,
-            event.data.transfer,
-            event.data.transferMax
-          );
-        } catch (err) {
-          if (inited) {
-            // same as [1]
-            throw err;
-          } else {
-            return;
-          }
-        }
-
-        const amountInt = bnUint(event.data.amount, decimal.get(op.tick));
-        this.assets.burn(event.from, op.tick, amountInt, "conditionalApprove");
-        this.assets.mint(event.to, op.tick, amountInt, "pendingSwap");
-        this.pendingEvent.push(event);
-      } else {
-        logger.error({ tag: "bug-event", event });
-      }
+      need(bn(event.data.amount).gt("0"), null, null, true);
+      const amountInt = bnUint(event.data.amount, decimal.get(op.tick));
+      this.assets.burn(event.from, op.tick, amountInt, "conditionalApprove");
+      this.assets.mint(event.to, op.tick, amountInt, "pendingSwap");
+      this.pendingEvent.push(event);
     } else if (event.event == EventType.inscribeApprove) {
       const op = event.op as ApproveOp;
-
-      try {
-        this.assetsChecker.checkInscribeApprove(event.inscriptionId, op.amt);
-      } catch (err) {
-        if (inited) {
-          // same as [1]
-          throw err;
-        } else {
-          return;
-        }
-      }
-
       const amountInt = bnUint(op.amt, decimal.get(op.tick));
       this.assets.convert(event.to, op.tick, amountInt, "available", "approve");
     } else if (event.event == EventType.inscribeConditionalApprove) {
       const op = event.op as ConditionalApproveOp;
-
-      try {
-        this.assetsChecker.checkInscribeConditionalApprove(
-          event.inscriptionId,
-          op.amt
-        );
-      } catch (err) {
-        if (inited) {
-          // same as [1]
-          throw err;
-        } else {
-          return;
-        }
-      }
-
       const amountInt = bnUint(op.amt, decimal.get(op.tick));
       this.assets.convert(
         event.to,
@@ -448,47 +445,105 @@ export class Space {
       );
     } else if (event.event == EventType.commit) {
       const op = event.op as CommitOp;
-      ret = this.handleCommitOp(op, event.inscriptionId);
+      const { inscriptionId, height } = event;
+
+      const gasPrice = op.gas_price;
+      ret = [];
+      for (let i = 0; i < op.data.length; i++) {
+        const func = convertFuncInscription2Internal(i, op, height);
+        try {
+          ret.push(this.aggregate(func, gasPrice, height));
+        } catch (err) {
+          sysFatal({
+            tag: TAG,
+            msg: "handle-commit",
+            error: err.message,
+            inscriptionId,
+            parent: op.parent,
+          });
+        }
+      }
+
       if (hasFuncType(op, FuncType.decreaseApproval)) {
         this.pendingEvent.push(event);
       }
     }
-
-    // maybe need to convert the balance immediately
-    this.updatePending();
-
-    this.eventsChecker.addEventResult(event, ret);
     return ret;
   }
 
-  handleCommitOp(op: CommitOp, inscriptionId: string) {
-    const result = this.eventsChecker.getCommmitResult(op.parent);
-    if (result !== undefined) {
-      return result;
-    }
+  checkAndUpdateEventCoherence(event: OpEvent) {
+    if (event.cursor == PENDING_CURSOR) {
+      need(event.op.op == OpType.commit, null, null, true);
 
-    if (inscriptionId) {
+      const op = event.op as CommitOp;
       if (this.lastCommitId) {
         need(
           this.lastCommitId == op.parent,
-          `last parent should be: ${this.lastCommitId}, but get parent: ${op.parent}`
+          `inscriptoionId: ${this.lastCommitId} should be parent, but get parent: ${op.parent}`,
+          null
+          // true
         );
       }
-      this.lastCommitId = inscriptionId;
-    }
+      if (event.inscriptionId) {
+        this.lastCommitId = event.inscriptionId;
+      }
+    } else {
+      if (this.lastHandledApiEvent) {
+        if (this.lastHandledApiEvent.cursor + 1 !== event.cursor) {
+          logger.error({
+            tag: TAG,
+            msg: "cursor error 2",
+            lastCursor: this.lastHandledApiEvent.cursor,
+            cursor: event.cursor,
+          });
+        }
+        need(this.lastHandledApiEvent.cursor + 1 == event.cursor);
+      }
+      this.lastHandledApiEvent = event;
+      if (event.op.op == OpType.commit) {
+        if (event.inscriptionId) {
+          this.lastCommitId = event.inscriptionId;
+        }
+      }
 
-    const gasPrice = op.gas_price;
-    const ret: ContractResult[] = [];
-    for (let i = 0; i < op.data.length; i++) {
-      const func = convertFuncInscription2Internal(i, op);
-      try {
-        ret.push(this.aggregate(func, gasPrice));
-      } catch (err) {
-        logger.error({ tag: "bug-handle-commit", id: func.id });
-        throw err;
+      /****************************************
+       * collector processing:
+       * 1. collect data
+       * 2. data processing (option)
+       * 3. cursor++
+       ****************************************/
+
+      /*3*/ if (this.notifyDataCollector) {
+        this.notifyDataCollector.checkAndUpdateCurCursor(event.cursor);
       }
     }
-    this.eventsChecker.addCommitResult(op.parent, ret);
+  }
+
+  handleEvent(
+    event: OpEvent,
+    processing: AssetProcessing = null
+  ): ContractResult[] {
+    this.checkAndUpdateEventCoherence(event);
+    if (this.spaceType !== SpaceType.pending) {
+      need(event.cursor !== PENDING_CURSOR, "space error 1", null, true);
+    }
+    if (
+      this.spaceType !== SpaceType.pending &&
+      this.spaceType !== SpaceType.mempool
+    ) {
+      need(event.height !== UNCONFIRM_HEIGHT, "space error 2", null, true);
+    }
+
+    let ret: ContractResult[] = null;
+    if (event.valid) {
+      // process data
+      this.notifyDataCollector?.setAssetProcessing(processing);
+      this.updatePending(); // when inscribe approve, the balance may has not been converted yet
+      ret = this.__handleOpEvent(event);
+      this.updatePending(); // maybe need to convert the balance immediately
+      this.notifyDataCollector?.setAssetProcessing(null);
+    }
+
     return ret;
   }
 
@@ -527,102 +582,19 @@ export class Space {
     }
   }
 
-  getAllBalance(address: string): AllAddressBalanceRes {
-    const ret = {};
-    const assets = this.assets.getAvaiableAssets(address);
-    assets.forEach((tick) => {
-      if (!isLp(tick)) {
-        ret[tick] = {
-          balance: this.getBalance(address, tick),
-          decimal: decimal.get(tick),
-          withdrawLimit:
-            config.whitelistTick[tick.toLowerCase()]?.withdrawLimit || "0",
-        };
-      }
-    });
-    return ret;
-  }
-
-  getPoolInfo(params: PoolInfoReq) {
-    const pair = getPairStr(params.tick0, params.tick1);
-    const existed = this.assets.isExist(pair);
-    if (!existed) {
-      return { existed, addLiq: false };
-    } else {
-      const addLiq = bn(this.assets.get(pair).supply).gt("0");
-      return { existed, addLiq };
-    }
-  }
-
-  async getSelect(params: SelectReq): Promise<SelectRes> {
-    const { address, search } = params;
-    const list = decimal.getAllTick();
-    const balances = await api.tickBalance(address);
-    const ret0 = list.map((tick) => {
-      let brc20Balance = "0";
-      for (let i = 0; i < balances.detail.length; i++) {
-        if (balances.detail[i].ticker == tick) {
-          brc20Balance = balances.detail[i].overallBalance;
-          break;
-        }
-      }
-      let swapBalance = bnDecimal(
-        this.assets.getBalance(address, tick),
-        decimal.get(tick)
-      );
-      return { tick, brc20Balance, swapBalance, decimal: decimal.get(tick) };
-    });
-    const ret1 = ret0.sort((a, b) => {
-      return bn(b.swapBalance).gt(a.swapBalance) ? 1 : -1;
-    });
-    const ret2 = ret0.sort((a, b) => {
-      return bn(b.brc20Balance).gt(a.brc20Balance) ? 1 : -1;
-    });
-    let ret: SelectRes = [];
-
-    const set = new Set();
-    for (let i = 0; i < ret1.length; i++) {
-      if (ret1[i].swapBalance !== "0") {
-        ret.push(ret1[i]);
-        set.add(ret1[i].tick);
-      } else {
-        break;
-      }
-    }
-    for (let i = 0; i < ret2.length; i++) {
-      if (!set.has(ret2[i].tick)) {
-        ret.push(ret2[i]);
-      }
-    }
-    if (search) {
-      ret = ret.filter((a) => {
-        return isMatch(a.tick, search);
-      });
-    }
-    ret = ret.filter((a) => {
-      try {
-        checkTick(a.tick);
-        return true;
-      } catch (err) {
-        return false;
-      }
-    });
-    return ret.slice(0, 20);
-  }
-
   partialClone(address: string, tick: string) {
     need(!!tick);
     let tick0: string;
     let tick1: string;
     let tickIsLp = isLp(tick);
     if (tickIsLp) {
-      const res = getPairStruct(tick);
+      const res = getPairStructV2(tick);
       tick0 = res.tick0;
       tick1 = res.tick1;
     }
 
     const map = this.assets.dataRefer();
-    const assets: SpaceSnapshot["assets"] = {};
+    const assets: SnapshotObj["assets"] = {};
 
     const list = [tick];
     if (tick0) {
@@ -639,7 +611,12 @@ export class Space {
       assets[assetType] = {};
       list.forEach((item) => {
         if (map[assetType][item]) {
-          assets[assetType][item] = { balance: {}, tick: item };
+          assets[assetType][item] = new Brc20(
+            {},
+            item,
+            map[assetType][item].Supply,
+            assetType
+          );
           assets[assetType][item].balance[address] =
             map[assetType][item].balanceOf(address);
 
@@ -666,27 +643,33 @@ export class Space {
     const contractStatus = _.cloneDeep(this.contract.status);
 
     return new Space(
-      { assets, assetsCheck: {}, contractStatus },
-      this.contract.config
+      {
+        assets,
+        contractStatus,
+        used: false,
+      },
+      this.contract.config,
+      this.LastCommitId,
+      this.lastHandledApiEvent,
+      false,
+      this.spaceType
     );
   }
 
-  snapshot(): SpaceSnapshot {
-    return _.cloneDeep({
+  snapshot(): SnapshotObj {
+    const startTime = Date.now();
+    const ret = cloneSnapshot({
       assets: this.assets.dataRefer(),
-      assetsCheck: this.assetsChecker.dataRefer(),
       contractStatus: this.contract.status,
+      used: false,
     });
-  }
-
-  isEqual(space: Space) {
-    try {
-      this.updatePending();
-      space.updatePending();
-      return hash(this.snapshot()) == hash(space.snapshot());
-    } catch (err) {
-      printErr("isEqual", err);
-      return false;
-    }
+    const ht = Date.now() - startTime;
+    logger.debug({
+      tag: TAG,
+      msg: "snapshot",
+      ht,
+      cursor: builder.MempoolSpaceCursor,
+    });
+    return ret;
   }
 }

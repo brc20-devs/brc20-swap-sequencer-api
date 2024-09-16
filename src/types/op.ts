@@ -1,4 +1,4 @@
-import { EventType, InscriptionEventItem } from "./api";
+import { ApiEvent, EventType } from "./api";
 import { InscriptionFunc } from "./func";
 
 export enum OpType {
@@ -7,6 +7,7 @@ export enum OpType {
   commit = "commit",
   approve = "approve",
   conditionalApprove = "conditional-approve",
+  withdraw = "withdraw",
 }
 
 export type Op =
@@ -14,9 +15,12 @@ export type Op =
   | CommitOp
   | TransferOp
   | ApproveOp
-  | ConditionalApproveOp;
+  | ConditionalApproveOp
+  | WithdrawOp;
 
 export type OpEvent = {
+  cursor: number;
+  valid: boolean;
   event: EventType;
   op: Op;
   height: number;
@@ -26,7 +30,7 @@ export type OpEvent = {
   inscriptionNumber: number;
   blocktime: number;
   txid: string;
-  data: InscriptionEventItem["data"];
+  data: ApiEvent["data"];
 };
 
 export type ModuleOp = {
@@ -79,4 +83,12 @@ export type TransferOp = {
 export type DeployOp = {
   p: "brc20-swap";
   op: OpType.deploy;
+};
+
+export type WithdrawOp = {
+  p: "brc20-module";
+  op: OpType.withdraw;
+  tick: string; // "ordi"
+  amt: string; // "10"
+  module: string; // "idxxxxi0"
 };

@@ -50,7 +50,7 @@ export const data = {
       result: {
         pools: [
           {
-            pair: "ordi/sats",
+            pair: "4/ordisats",
             reserve0: uintCal(["10000", "mul", "1e18"]),
             reserve1: uintCal(["50000", "mul", "1e18"]),
             lp: "22360679774997896964091",
@@ -59,7 +59,7 @@ export const data = {
         users: [
           {
             address: "1",
-            tick: "ordi/sats",
+            tick: "4/ordisats",
             balance: "22360679774997896963091",
           },
           {
@@ -98,7 +98,7 @@ export const data = {
       result: {
         pools: [
           {
-            pair: "ordi/sats",
+            pair: "4/ordisats",
             reserve0: uintCal(["20000", "mul", "1e18"]),
             reserve1: uintCal(["100000", "mul", "1e18"]),
             lp: "44721359549995793928182",
@@ -107,7 +107,7 @@ export const data = {
         users: [
           {
             address: "2",
-            tick: "ordi/sats",
+            tick: "4/ordisats",
             balance: "22360679774997896964091",
           },
           {
@@ -141,7 +141,7 @@ export const data = {
       result: {
         pools: [
           {
-            pair: "ordi/sats",
+            pair: "4/ordisats",
             reserve0: uintCal(["20010", "mul", "1e18"]),
             reserve1: "99950024987506246876562",
             lp: "44721359549995793928182",
@@ -179,7 +179,7 @@ export const data = {
       result: {
         pools: [
           {
-            pair: "ordi/sats",
+            pair: "4/ordisats",
             reserve0: "19990000004995002499999",
             reserve1: "100050024987506246876562",
             lp: "44721359549995793928182",
@@ -212,14 +212,14 @@ export const data = {
       result: {
         pools: [
           {
-            pair: "ordi/sats",
+            pair: "4/ordisats",
             reserve0: "9995000002497501250000",
             reserve1: "50025012493753123438281",
             lp: "22360679774997896964091",
           },
         ],
         users: [
-          { address: "2", tick: "ordi/sats", balance: "0" },
+          { address: "2", tick: "4/ordisats", balance: "0" },
           {
             address:
               "tb1pe0ejf236zwxf4avwwjggs42v579nwt0xsspgcmq9kkgwygq5297snpqxt5",
@@ -251,7 +251,7 @@ export const data = {
       result: {
         pools: [
           {
-            pair: "ordi/sats",
+            pair: "4/ordisats",
             reserve0: "9975059857836703135540",
             reserve1: "50125012493753123438281",
             lp: "22360679774997896964091",
@@ -284,7 +284,7 @@ export const data = {
       result: {
         pools: [
           // {
-          //   pair: "ordi/sats",
+          //   pair: "4/ordisats",
           //   amount0: "9975.05985783670313554",
           //   amount1: "50125.012493753123438281",
           //   lp: "22360.679774997896964091",

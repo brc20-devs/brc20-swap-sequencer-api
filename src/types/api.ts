@@ -127,6 +127,8 @@ export enum EventType {
   approve = "approve",
   conditionalApprove = "conditional-approve",
   commit = "commit",
+  inscribeWithdraw = "inscribe-withdraw",
+  withdraw = "withdraw",
 }
 
 export type ModuleInscriptionInfo = {
@@ -142,7 +144,7 @@ export type ModuleInscriptionInfo = {
   };
 };
 
-export type InscriptionEventItem = {
+export type ApiEvent = {
   valid: boolean;
   type: EventType;
   txid: string;
@@ -164,7 +166,7 @@ export type InscriptionEventItem = {
 export type InscriptionEventsRes = {
   total: number;
   cursor: number;
-  detail: InscriptionEventItem[];
+  detail: ApiEvent[];
 };
 
 export type CommitTx = {
@@ -175,4 +177,6 @@ export type CommitTx = {
   height: number;
   fee: number;
   feeRate: number;
+  parent: string;
+  timestamp: number;
 };

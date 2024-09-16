@@ -1,9 +1,10 @@
 require("source-map-support/register");
+require("dotenv").config();
 
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import path from "path";
-import process, { exit } from "process";
+import process from "process";
 import { init } from "./init";
 import { swagger } from "./middleware/swagger";
 import { wrap } from "./middleware/wrap";
@@ -13,7 +14,7 @@ import { statusRoute } from "./route/status";
 import { getDate } from "./utils/utils";
 
 process.on("uncaughtException", (err) => {
-  logger.uncaughtException({ error: err.message, stack: err.stack });
+  console.log("uncaughtException: ", err.message, err.stack);
 });
 
 void (async () => {
@@ -23,10 +24,10 @@ void (async () => {
     await init();
 
     const fastify = Fastify({
-      logger: config.routeDebugLog,
+      logger: true,
     });
     void wrap(fastify);
-    if (config.isLocalTest) {
+    if (config.openSwagger) {
       await swagger(fastify);
     }
     void fastify.register(baseRoute);
@@ -55,6 +56,6 @@ void (async () => {
     );
   } catch (err) {
     console.error(err);
-    exit(1);
+    // exit(1);
   }
 })();

@@ -16,7 +16,16 @@
       FuncType["swap"] = "swap";
       FuncType["removeLiq"] = "removeLiq";
       FuncType["decreaseApproval"] = "decreaseApproval";
+      FuncType["send"] = "send";
+      FuncType["sendLp"] = "sendLp";
   })(FuncType || (FuncType = {}));
+
+  ({
+      FRACTAL_BITCOIN_MAINNET: "FB",
+      BITCOIN_MAINNET: "BTC",
+      BITCOIN_TESTNET: "tBTC",
+      FRACTAL_BITCOIN_TESTNET: "tFB",
+  })[process.env.BITCOIN_NETWORK];
 
   function sortTickParams(_params) {
       const params = _params;
@@ -31,9 +40,14 @@
           return ret;
       }
   }
-  function getPairStr(tick0, tick1) {
+  const str32 = "0123456789abcdefghijklmnopqrstuvwxyz";
+  function convert10To32(n) {
+      need(n >= 0 && n < 32);
+      return str32[n];
+  }
+  function getPairStrV2(tick0, tick1) {
       const params = sortTickParams({ tick0, tick1 });
-      return `${params.tick0}/${params.tick1}`;
+      return `${convert10To32(Buffer.from(params.tick0).length)}/${params.tick0}${params.tick1}`;
   }
   function need(condition, message) {
       if (!condition) {
@@ -121,17 +135,18 @@
   }
 
   class Brc20 {
-      constructor(balance, tick) {
+      setObserver(observer) {
+          this.observer = observer;
+      }
+      constructor(balance, tick, supply, assetType) {
           this.balance = {};
           this.balance = balance;
           this.tick = tick;
-          this._supply = "0";
-          for (const address in this.balance) {
-              this._supply = uintCal([this._supply, "add", this.balance[address]]);
-          }
+          this.supply = supply;
+          this.assetType = assetType;
       }
-      get supply() {
-          return this._supply;
+      get Supply() {
+          return this.supply;
       }
       balanceOf(address) {
           return this.balance[address] || "0";
@@ -143,6 +158,20 @@
           this.balance[to] = uintCal([this.balance[to] || "0", "add", amount]);
           this.checkAddress(from);
           this.checkAddress(to);
+          if (this.observer) {
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address: from,
+                  balance: this.balanceOf(from),
+              });
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address: to,
+                  balance: this.balanceOf(to),
+              });
+          }
       }
       mint(address, amount) {
           this.checkAmount(amount);
@@ -151,8 +180,16 @@
               "add",
               amount,
           ]);
-          this._supply = uintCal([this._supply, "add", amount]);
+          this.supply = uintCal([this.supply, "add", amount]);
           this.checkAddress(address);
+          if (this.observer) {
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address,
+                  balance: this.balanceOf(address),
+              });
+          }
       }
       burn(address, amount) {
           this.checkAmount(amount);
@@ -162,8 +199,16 @@
               "sub",
               amount,
           ]);
-          this._supply = uintCal([this._supply, "sub", amount]);
+          this.supply = uintCal([this.supply, "sub", amount]);
           this.checkAddress(address);
+          if (this.observer) {
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address,
+                  balance: this.balanceOf(address),
+              });
+          }
       }
       checkAmount(amount) {
           need(bn(amount).gt("0"), "invalid amount: " + this.tick);
@@ -174,14 +219,16 @@
   }
 
   class Assets {
-      constructor(map) {
-          this.map = {};
-          for (const assetType in map) {
-              for (const tick in map[assetType]) {
-                  const brc20 = new Brc20(map[assetType][tick].balance, map[assetType][tick].tick);
-                  map[assetType][tick] = brc20;
+      setObserver(observer) {
+          this.observer = observer;
+          for (const assetType in this.map) {
+              for (const tick in this.map[assetType]) {
+                  this.map[assetType][tick].setObserver(observer);
               }
           }
+      }
+      constructor(map) {
+          this.map = {};
           this.map = map;
       }
       getAvaiableAssets(address) {
@@ -198,7 +245,16 @@
       tryCreate(tick) {
           for (let assetType in this.map) {
               if (!this.map[assetType][tick]) {
-                  this.map[assetType][tick] = new Brc20({}, tick);
+                  this.map[assetType][tick] = new Brc20({}, tick, "0", assetType);
+                  this.map[assetType][tick].setObserver(this.observer);
+                  if (this.observer) {
+                      this.observer.notify("asset", {
+                          assetType,
+                          tick,
+                          address: "0",
+                          balance: "0",
+                      });
+                  }
               }
           }
       }
@@ -240,7 +296,7 @@
           this.map[toAssetType][tick].mint(to, amount);
       }
       swap(address, tickIn, tickOut, amountIn, amountOut, assetType = "swap") {
-          const pair = getPairStr(tickIn, tickOut);
+          const pair = getPairStrV2(tickIn, tickOut);
           this.map[assetType][tickIn].transfer(address, pair, amountIn);
           this.map[assetType][tickOut].transfer(pair, address, amountOut);
       }
@@ -257,6 +313,9 @@
   const feeRate = "6";
   const AssetsClass = Assets;
   class Contract {
+      setObserver(observer) {
+          this.observer = observer;
+      }
       constructor(assets, status, config) {
           this.assets = assets;
           this.status = status;
@@ -264,7 +323,7 @@
       }
       deployPool(params) {
           need(params.tick0 !== params.tick1, duplicate_tick);
-          const pair = getPairStr(params.tick0, params.tick1);
+          const pair = getPairStrV2(params.tick0, params.tick1);
           need(!this.assets.isExist(pair), pool_existed);
           this.assets.tryCreate(pair);
           return {};
@@ -275,14 +334,14 @@
           checkGtZero(amount1);
           checkGteZero(expect);
           checkSlippage(slippage1000);
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           const { address } = params;
           need(!!this.assets.isExist(pair), pool_not_found);
           this.mintFee({
               tick0,
               tick1,
           });
-          if (this.assets.get(pair).supply == "0") {
+          if (this.assets.get(pair).Supply == "0") {
               const lp = uintCal([amount0, "mul", amount1, "sqrt"]);
               const firstLP = uintCal([lp, "sub", "1000"]);
               this.assets.get(pair).mint(address, firstLP);
@@ -303,13 +362,19 @@
                       "mul",
                       this.assets.get(tick1).balanceOf(pair),
                   ]);
+                  if (this.observer) {
+                      this.observer.notify("klast", {
+                          tick: pair,
+                          value: this.status.kLast[pair],
+                      });
+                  }
               }
               return { lp: firstLP, amount0, amount1 };
           }
           else {
               let amount0Adjust;
               let amount1Adjust;
-              const poolLp = this.assets.get(pair).supply;
+              const poolLp = this.assets.get(pair).Supply;
               const poolAmount0 = this.assets.get(tick0).balanceOf(pair);
               const poolAmount1 = this.assets.get(tick1).balanceOf(pair);
               amount1Adjust = uintCal([
@@ -353,6 +418,12 @@
                       "mul",
                       this.assets.get(tick1).balanceOf(pair),
                   ]);
+                  if (this.observer) {
+                      this.observer.notify("klast", {
+                          tick: pair,
+                          value: this.status.kLast[pair],
+                      });
+                  }
               }
               return { lp, amount0: amount0Adjust, amount1: amount1Adjust };
           }
@@ -367,9 +438,9 @@
               tick0,
               tick1,
           });
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           need(!!this.assets.isExist(pair), pool_not_found);
-          const poolLp = this.assets.get(pair).supply;
+          const poolLp = this.assets.get(pair).Supply;
           const reserve0 = this.assets.get(tick0).balanceOf(pair);
           const reserve1 = this.assets.get(tick1).balanceOf(pair);
           const acquire0 = uintCal([lp, "mul", reserve0, "div", poolLp]);
@@ -397,6 +468,12 @@
                   "mul",
                   this.assets.get(tick1).balanceOf(pair),
               ]);
+              if (this.observer) {
+                  this.observer.notify("klast", {
+                      tick: pair,
+                      value: this.status.kLast[pair],
+                  });
+              }
           }
           return { tick0, tick1, amount0: acquire0, amount1: acquire1 };
       }
@@ -405,7 +482,7 @@
           checkGtZero(amount);
           checkGteZero(expect);
           checkSlippage(slippage1000);
-          const pair = getPairStr(tickIn, tickOut);
+          const pair = getPairStrV2(tickIn, tickOut);
           const reserveIn = this.assets.get(tickIn).balanceOf(pair);
           const reserveOut = this.assets.get(tickOut).balanceOf(pair);
           let amountIn;
@@ -425,7 +502,7 @@
                   "div",
                   uintCal(["1000", "add", slippage1000]),
               ]);
-              need(bn(amountOut).gte(amountOutMin), exceeding_slippage);
+              need(bn(amountOut).gte(amountOutMin), exceeding_slippage + ": " + amountOut + " " + amountOutMin);
               ret = amountOut;
           }
           else {
@@ -489,7 +566,7 @@
       }
       getFeeLp(params) {
           const { tick0, tick1 } = params;
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           const reserve0 = this.assets.get(tick0).balanceOf(pair);
           const reserve1 = this.assets.get(tick1).balanceOf(pair);
           {
@@ -498,7 +575,7 @@
                   const rootKLast = uintCal([this.status.kLast[pair], "sqrt"]);
                   if (bn(rootK).gt(rootKLast)) {
                       const numerator = uintCal([
-                          this.assets.get(pair).supply,
+                          this.assets.get(pair).Supply,
                           "mul",
                           uintCal([rootK, "sub", rootKLast]),
                       ]);
@@ -513,7 +590,7 @@
       }
       mintFee(params) {
           const { tick0, tick1 } = params;
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           {
               const liquidity = this.getFeeLp(params);
               if (bn(liquidity).gt("0")) {

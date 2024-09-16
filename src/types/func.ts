@@ -12,6 +12,7 @@ export enum FuncType {
   removeLiq = "removeLiq",
   decreaseApproval = "decreaseApproval",
   send = "send",
+  sendLp = "sendLp",
 }
 
 export type DeployPoolParams = [string /** ordi */, string /** sats */];
@@ -24,13 +25,22 @@ export type DeployPoolIn = {
 
 export type DeployPoolOut = {};
 
-export type AddLiqParams = [
-  string /** orid/sats */,
-  string /** 100 */,
-  string /** 200 */,
-  string /** 10 */,
-  string /** 0.005 */
-];
+export type AddLiqParams =
+  | [
+      string /** orid/sats */,
+      string /** 100 */,
+      string /** 200 */,
+      string /** 10 */,
+      string /** 0.005 */
+    ]
+  | [
+      string /** orid */,
+      string /** sats */,
+      string /** 100 */,
+      string /** 200 */,
+      string /** 10 */,
+      string /** 0.005 */
+    ];
 
 export type AddLiqIn = {
   address: string;
@@ -48,13 +58,22 @@ export type AddLiqOut = {
   amount1: string;
 };
 
-export type RemoveLiqParams = [
-  string /** orid/sats */,
-  string /** 100 */,
-  string /** 1.34 */,
-  string /** 12.34 */,
-  string /** 0.005 */
-];
+export type RemoveLiqParams =
+  | [
+      string /** orid/sats */,
+      string /** 100 */,
+      string /** 1.34 */,
+      string /** 12.34 */,
+      string /** 0.005 */
+    ]
+  | [
+      string /** orid */,
+      string /** sats */,
+      string /** 100 */,
+      string /** 1.34 */,
+      string /** 12.34 */,
+      string /** 0.005 */
+    ];
 
 export type DecreaseApprovalParams = [string /** orid */, string /** 100 */];
 
@@ -75,14 +94,24 @@ export type RemoveLiqOut = {
   amount1: string;
 };
 
-export type SwapParams = [
-  string /** ordi/sats */,
-  string /** ordi */,
-  string /** 100 */,
-  string /** exactIn */,
-  string /** 12.34 */,
-  string /** 0.005 */
-];
+export type SwapParams =
+  | [
+      string /** ordi/sats */,
+      string /** ordi */,
+      string /** 100 */,
+      string /** exactIn */,
+      string /** 12.34 */,
+      string /** 0.005 */
+    ]
+  | [
+      string /** ordi */,
+      string /** sats */,
+      string /** ordi */,
+      string /** 100 */,
+      string /** exactIn */,
+      string /** 12.34 */,
+      string /** 0.005 */
+    ];
 
 export type SendParams = [
   string /** address */,
@@ -163,6 +192,10 @@ export type FuncArr =
   | {
       func: FuncType.send;
       params: SendParams;
+    }
+  | {
+      func: FuncType.sendLp;
+      params: SendParams;
     };
 
 export type FuncMap =
@@ -188,6 +221,10 @@ export type FuncMap =
     }
   | {
       func: FuncType.send;
+      params: SendIn;
+    }
+  | {
+      func: FuncType.sendLp;
       params: SendIn;
     };
 
@@ -229,6 +266,13 @@ export type ContractResult =
     }
   | {
       func: FuncType.send;
+      out: SendOut;
+      preResult: Result;
+      result: Result;
+      gas: string;
+    }
+  | {
+      func: FuncType.sendLp;
       out: SendOut;
       preResult: Result;
       result: Result;
@@ -295,6 +339,14 @@ export type InternalFunc =
   | {
       id: string;
       func: FuncType.send;
+      params: SendIn;
+      prevs: string[];
+      ts: number;
+      sig: string;
+    }
+  | {
+      id: string;
+      func: FuncType.sendLp;
       params: SendIn;
       prevs: string[];
       ts: number;

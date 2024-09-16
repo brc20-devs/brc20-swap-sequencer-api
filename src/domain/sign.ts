@@ -2,7 +2,6 @@ import { base64 } from "@scure/base";
 import * as bitcoin from "bitcoinjs-lib";
 import { ECPair } from ".";
 import { AddressType, HashIdMsg, OridinalMsg } from "../types/domain";
-import { normalizeNumberStr } from "../utils/utils";
 import { getAddressType, reverseHash } from "./utils";
 
 export function getSignMsg(datas: OridinalMsg[]) {
@@ -14,9 +13,10 @@ export function getSignMsg(datas: OridinalMsg[]) {
     const data = datas[i];
 
     // fix 10.0 to normalize number
-    const params = data.params.map((item) => {
-      return normalizeNumberStr(item);
-    });
+    // const params = data.params.map((item) => {
+    //   return normalizeNumberStr(item);
+    // });
+    const params = data.params;
 
     const res = hashid({
       module: data.module,

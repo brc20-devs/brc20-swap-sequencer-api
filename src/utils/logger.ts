@@ -72,7 +72,7 @@ export class DateLogger {
     }, 10000);
   }
 
-  public debug(obj: object & { tag: string; [key: string]: any }) {
+  public debug(obj: object & { tag: string; msg: string; [key: string]: any }) {
     if (config.loggerLevel > LoggerLevel.debug) {
       return;
     }
@@ -86,41 +86,28 @@ export class DateLogger {
     this.map["route"].logger.info({ timestamp: Date.now(), ...obj });
   }
 
-  public info(obj: object & { tag: string; [key: string]: any }) {
+  public info(obj: object & { tag: string; msg: string; [key: string]: any }) {
     if (config.loggerLevel > LoggerLevel.info) {
       return;
     }
     this.map["info"].logger.info({ timestamp: Date.now(), ...obj });
   }
 
-  public warn(obj: object & { tag: string; [key: string]: any }) {
+  public warn(obj: object & { tag: string; msg: string; [key: string]: any }) {
     if (config.loggerLevel > LoggerLevel.warn) {
       return;
     }
     this.map["warn"].logger.warn({ timestamp: Date.now(), ...obj });
   }
 
-  public error(obj: object & { tag: string; [key: string]: any }) {
+  public error(obj: object & { tag: string; msg: string; [key: string]: any }) {
     if (config.loggerLevel > LoggerLevel.error) {
       return;
     }
     this.map["error"].logger.error({ timestamp: Date.now(), ...obj });
   }
 
-  public uncaughtException(obj: object) {
-    if (config.loggerLevel > LoggerLevel.error) {
-      return;
-    }
-    this.map["uncaughtException"].logger.error({
-      timestamp: Date.now(),
-      ...obj,
-    });
-  }
-
-  public fatal(obj: object) {
-    if (config.loggerLevel > LoggerLevel.error) {
-      return;
-    }
+  public fatal(obj: object & { tag: string; msg: string; [key: string]: any }) {
     this.map["fatal"].logger.error({ timestamp: Date.now(), ...obj });
   }
 }

@@ -1,5 +1,5 @@
 import { DUST546 } from "../../domain/constant";
-import { CodeEnum } from "../../domain/error";
+import { CodeEnum, insufficient_balance } from "../../domain/error";
 import { need } from "../../domain/utils";
 import { VPsbt } from "../../domain/vpsbt";
 import { ToSignInput, UTXO } from "../../types/api";
@@ -67,7 +67,11 @@ export function generateSendInscriptionTx({
     const dummyChanged = DUST546;
     vpsbt.addOutput({ address: btcWallet.address, value: dummyChanged }); // o1
     const left = vpsbt.getLeftAmount();
-    need(left >= 0, null, CodeEnum.sequencer_insufficient_funds);
+    need(
+      left >= 0,
+      insufficient_balance,
+      CodeEnum.sequencer_insufficient_funds
+    );
 
     const networkFee = vpsbt.estimateNetworkFee(feeRate);
 
@@ -76,7 +80,11 @@ export function generateSendInscriptionTx({
       address: btcWallet.address,
       value: change,
     });
-    need(change >= DUST546, null, CodeEnum.sequencer_insufficient_funds);
+    need(
+      change >= DUST546,
+      insufficient_balance,
+      CodeEnum.sequencer_insufficient_funds
+    );
   }
 
   const psbt = vpsbt.toPsbt();

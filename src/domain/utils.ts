@@ -10,8 +10,8 @@ import {
 } from "../contract/bn";
 import { RecordLiqData } from "../dao/record-liq-dao";
 import { RecordSwapData } from "../dao/record-swap-dao";
-import { EventType, UTXO } from "../types/api";
-import { AddressType } from "../types/domain";
+import { ApiEvent, EventType, UTXO } from "../types/api";
+import { AddressType, SnapshotObj } from "../types/domain";
 import {
   AddLiqOut,
   ContractResult,
@@ -23,34 +23,46 @@ import {
   SwapOut,
 } from "../types/func";
 import {} from "../types/global";
-import { CommitOp, OpEvent } from "../types/op";
+import { CommitOp, OpEvent, OpType } from "../types/op";
 import { PsbtInputExtended } from "../types/psbt";
 import { FeeRes, FuncReq } from "../types/route";
-import { DUST330, DUST546, LP_DECIMAL, MAX_HEIGHT } from "./constant";
+import { DUST330, DUST546, LP_DECIMAL, UNCONFIRM_HEIGHT } from "./constant";
 import { convertReq2Arr } from "./convert-struct";
 import {
   CodeEnum,
   CodeError,
   access_denied,
   deposit_delay_swap,
+  internal_server_error,
   invalid_address,
   invalid_aggregation,
   invalid_amount,
   invalid_slippage,
   invalid_ts,
   not_support_address,
-  server_error,
   tick_disable,
   utxo_not_enough,
 } from "./error";
 
+const TAG = "utils";
+
 /**
  * An exception will be thrown if the condition is not met.
  */
-export function need(condition: boolean, message?: string, code?: CodeEnum) {
+export function need(
+  condition: boolean,
+  msg?: string,
+  code?: CodeEnum,
+  fatal = false
+) {
   if (!condition) {
     code = code ?? (-1 as CodeEnum);
-    throw new CodeError(message || `${server_error}: ${code}`, code);
+    if (fatal) {
+      global.fatal = true;
+      logger.fatal({ tag: "need", msg });
+      // process.exit(1);
+    }
+    throw new CodeError(msg || `${internal_server_error}: ${code}`, code);
   }
 }
 
@@ -69,7 +81,7 @@ export function getInputAmount(utxos: UTXO[]) {
  * Calculate the confirmations
  */
 export function heightConfirmNum(height: number) {
-  if (height == MAX_HEIGHT) {
+  if (height == UNCONFIRM_HEIGHT) {
     return 0;
   } else {
     return Math.max(0, env.NewestHeight - height + 1);
@@ -84,12 +96,13 @@ export function isBrc20(tick: string) {
   return Buffer.from(tick).length == 4;
 }
 
-/**
- * Is valid lp ticker
- * e.g. "ordi/sats"
- */
 export function isLp(tick: string) {
-  return Buffer.from(tick).length == 9 && tick[4] == "/";
+  try {
+    const pair = getPairStructV2(tick);
+    return getPairStrV2(pair.tick0, pair.tick1) == tick;
+  } catch (err) {
+    return false;
+  }
 }
 
 /**
@@ -299,7 +312,7 @@ export function estimateServerFee(req: FuncReq): FeeRes {
   } else if (getAddressType(address) == AddressType.P2WPKH) {
     sig = "x".repeat(144); // deviation
   }
-  const gasPrice = operator.CommitData.op.gas_price;
+  const gasPrice = operator.NewestCommitData.op.gas_price;
   const feeRate = env.FeeRate.toString();
   const bytesL2 = Math.ceil(
     getFuncInternalLength({
@@ -313,25 +326,45 @@ export function estimateServerFee(req: FuncReq): FeeRes {
   );
   const bytesL1 = bytesL2 / 4 + 310;
 
-  const serviceTickBalance = operator.NewestSpace.getBalance(
+  const serviceTickBalance = operator.PendingSpace.getBalance(
     req.req.address,
     env.ModuleInitParams.gas_tick
   ).swap;
-  return {
-    bytesL1,
-    bytesL2,
-    feeRate,
-    gasPrice,
-    serviceFeeL1: decimalCal([feeRate, "mul", bytesL1]),
-    serviceFeeL2: decimalCal([gasPrice, "mul", bytesL2]),
-    unitUsdPriceL1: env.SatsPrice,
-    unitUsdPriceL2: decimalCal([env.GasTickPrice, "mul", env.SatsPrice]),
-    serviceTickBalance,
-  };
+
+  if (env.NewestHeight < config.updateHeight1) {
+    return {
+      bytesL1,
+      bytesL2,
+      feeRate,
+      gasPrice,
+      serviceFeeL1: decimalCal([feeRate, "mul", bytesL1]),
+      serviceFeeL2: decimalCal([gasPrice, "mul", bytesL2]),
+      unitUsdPriceL1: env.SatsPrice,
+      unitUsdPriceL2: decimalCal([env.GasTickPrice, "mul", env.SatsPrice]),
+      serviceTickBalance,
+    };
+  } else {
+    return {
+      bytesL1,
+      bytesL2,
+      feeRate,
+      gasPrice,
+      serviceFeeL1: decimalCal([feeRate, "mul", bytesL1]),
+      serviceFeeL2: gasPrice,
+      unitUsdPriceL1: env.SatsPrice,
+      unitUsdPriceL2: decimalCal([env.GasTickPrice, "mul", env.SatsPrice]),
+      serviceTickBalance,
+    };
+  }
 }
 
-import { sortTickParams } from "../contract/contract-utils";
-import { OpCommitData } from "../dao/op-commit-dao";
+import _ from "lodash";
+import { Brc20 } from "../contract/brc20";
+import {
+  getPairStrV2,
+  getPairStructV2,
+  sortTickParams,
+} from "../contract/contract-utils";
 import { RecordApproveData } from "../dao/record-approve-dao";
 import { RecordGasData } from "../dao/record-gas-dao";
 import { RecordSendData } from "../dao/record-send-dao";
@@ -404,6 +437,8 @@ export function checkOpEvent(event: OpEvent) {
     EventType.inscribeConditionalApprove,
     EventType.inscribeModule,
     EventType.transfer,
+    EventType.inscribeWithdraw,
+    EventType.withdraw,
   ];
   if (!events.includes(event.event)) {
     throw new CodeError("unsupported op: " + event.event);
@@ -429,10 +464,16 @@ export function isValidAddress(address: string) {
  * This will result in no longer processing the data.
  * @param message
  */
-export function sysFatal(tag: string, message: any) {
+export function sysFatal(
+  obj: object & { tag: string; msg: string; [key: string]: any }
+) {
+  const err = new Error("System fatal error: " + obj.msg);
   global.fatal = true;
-  logger.fatal({ tag, message });
-  throw new CodeError("system fatal error");
+  logger.fatal({
+    ...obj,
+    stack: err.stack,
+  });
+  throw err;
 }
 
 /**
@@ -573,7 +614,7 @@ export function getMinUTXOs(
 }
 
 export function getConfirmedNum(height: number) {
-  if (height == MAX_HEIGHT) {
+  if (height == UNCONFIRM_HEIGHT) {
     return 0;
   } else {
     return env.NewestHeight - height + 1;
@@ -609,92 +650,10 @@ export function utxoToInput(
       },
     };
   } else {
+    logger.error({ tag: TAG, msg: "utxoToInput", utxo });
     throw new CodeError(
       "not supported address type, please switch to the taproot address or native segwit address "
     );
-  }
-}
-
-export async function handleInvalidDaoData() {
-  const query: Partial<OpCommitData> = {
-    invalid: true,
-    invalidHandled: false,
-  };
-  const list = await opCommitDao.findFrom(query);
-  for (let i = 0; i < list.length; i++) {
-    const item = list[i];
-    for (let j = 0; j < item.op.data.length; j++) {
-      const func = item.op.data[j];
-      await recordGasDao.updateOne(
-        {
-          id: func.id,
-        },
-        { $set: { invalid: true } }
-      );
-      if (func.func == FuncType.swap) {
-        await recordSwapDao.updateOne(
-          { id: func.id },
-          { $set: { invalid: true } }
-        );
-      } else if (
-        func.func == FuncType.addLiq ||
-        func.func == FuncType.removeLiq
-      ) {
-        await recordLiqDao.updateOne(
-          { id: func.id },
-          { $set: { invalid: true } }
-        );
-      } else if (func.func == FuncType.decreaseApproval) {
-        await recordApproveDao.updateOne(
-          { id: func.id },
-          { $set: { invalid: true } }
-        );
-        const withdrawItem = await withdrawDao.findOne({ id: func.id });
-        if (withdrawItem) {
-          await withdrawDao.updateOne(
-            { id: func.id },
-            { $set: { invalid: true } }
-          );
-
-          const matchingItems = await matchingDao.find({
-            approveInscriptionId: withdrawItem.inscriptionId,
-            invalid: { $ne: true },
-          });
-
-          if (matchingItems.length > 0) {
-            await matchingDao.updateMany(
-              {
-                approveInscriptionId: withdrawItem.inscriptionId,
-              },
-              { $set: { invalid: true } }
-            );
-          }
-          for (let k = 0; k < matchingItems.length; k++) {
-            const matchingItem = matchingItems[k];
-
-            await depositDao.updateOne(
-              { inscriptionId: matchingItem.transferInscriptionId },
-              { $set: { invalid: true } }
-            );
-          }
-        }
-      }
-    }
-    let query = { inscriptionId: item.inscriptionId } as any;
-    if (!item.inscriptionId) {
-      query = {
-        inscriptionId: { $exists: false },
-        invalid: { $exists: false },
-      };
-    } else {
-      await opListDao.updateOne(
-        { "opEvent.inscriptionId": item.inscriptionId },
-        { $set: { invalid: true } }
-      );
-    }
-    await opCommitDao.updateOne(query, {
-      $set: { invalid: true, invalidHandled: true },
-    });
   }
 }
 
@@ -714,12 +673,78 @@ export function checkTick(tick: string) {
   }
 }
 
-export function getEventKey(event: OpEvent) {
-  if (event.event == EventType.conditionalApprove) {
-    return `${event.event}-${event.inscriptionId}-${event.txid}-${event.data.transfer}`;
-  } else {
-    return `${event.event}-${event.inscriptionId}-${event.txid}`;
+export async function apiEventToOpEvent(item: ApiEvent, cursor: number) {
+  // need(item.valid);
+  const event: OpEvent = {
+    cursor,
+    valid: item.valid,
+    height: item.height,
+    from: item.from,
+    to: item.to,
+    inscriptionId: item.inscriptionId,
+    inscriptionNumber: item.inscriptionNumber,
+    op: JSON.parse(item.contentBody),
+    blocktime: item.blocktime,
+    txid: item.txid,
+    data: item.data,
+    event: item.type,
+  };
+
+  // fix tick
+  if ((event.op as any).tick) {
+    (event.op as any).tick = decimal.getRealTick((event.op as any).tick);
   }
+
+  checkOpEvent(event);
+
+  // pre handle event
+  if (
+    [
+      EventType.approve,
+      EventType.conditionalApprove,
+      EventType.inscribeApprove,
+      EventType.inscribeConditionalApprove,
+    ].includes(event.event)
+  ) {
+    need(!!item.data);
+  }
+
+  // pre handle op
+  if (event.op.op == OpType.approve) {
+    await decimal.trySetting(event.op.tick);
+  } else if (event.op.op == OpType.commit) {
+    //
+    for (let i = 0; i < event.op.data.length; i++) {
+      const item = event.op.data[i];
+      if (item.func == FuncType.deployPool) {
+        const [tick0, tick1] = item.params;
+        await decimal.trySetting(tick0);
+        await decimal.trySetting(tick1);
+      }
+    }
+  } else if (event.op.op == OpType.deploy) {
+    need(!!event.op.init.sequencer);
+    need(!!event.op.init.fee_to);
+    need(!!event.op.init.gas_to);
+    need(!!event.op.init.gas_tick);
+    env.ContractConfig = {
+      swapFeeRate1000: event.op.init.swap_fee_rate
+        ? decimalCal([event.op.init.swap_fee_rate, "mul", 1000])
+        : "0",
+      feeTo: event.op.init.fee_to,
+    };
+    for (let i = 0; i < config.initTicks.length; i++) {
+      await decimal.trySetting(config.initTicks[i]);
+    }
+    // await decimal.trySetting("sats");
+    // await decimal.trySetting("ordi");
+    await decimal.trySetting(event.op.init.gas_tick);
+  } else if (event.op.op == OpType.transfer) {
+    await decimal.trySetting(event.op.tick);
+  } else if (event.op.op == OpType.withdraw) {
+    await decimal.trySetting(event.op.tick);
+  }
+  return event;
 }
 
 export async function checkDepositLimitTime(address: string, tick: string) {
@@ -747,20 +772,11 @@ export async function getTickUsdPrice(tick: string, amount: string) {
   return decimalCal([tickPrice, "mul", env.SatsPrice, "mul", amount]);
 }
 
-export async function notInEventCommitIds() {
-  const res = await opCommitDao.findNotInEventList();
-  let ret = res.map((v) => v.inscriptionId);
-  ret = ret.filter((a) => {
-    return !!a;
-  });
-  return ret;
-}
-
 export function filterDustUTXO(utxos: UTXO[]) {
   const ret: UTXO[] = [];
   for (let i = 0; i < utxos.length; i++) {
     const item = utxos[i];
-    if (item.height == MAX_HEIGHT && item.satoshi < 1000) {
+    if (item.height == UNCONFIRM_HEIGHT && item.satoshi < 1000) {
     } else {
       ret.push(item);
     }
@@ -772,7 +788,7 @@ export function filterUnconfirmedUTXO(utxos: UTXO[]) {
   const ret: UTXO[] = [];
   for (let i = 0; i < utxos.length; i++) {
     const item = utxos[i];
-    if (item.height == MAX_HEIGHT) {
+    if (item.height == UNCONFIRM_HEIGHT) {
     } else {
       ret.push(item);
     }
@@ -802,4 +818,87 @@ export function fixTickCaseSensitive(param: {
   if (param.tickOut) {
     param.tickOut = decimal.getRealTick(param.tickOut);
   }
+}
+
+export function cloneSnapshot(snapshot: SnapshotObj) {
+  const ret: SnapshotObj = {
+    assets: {
+      swap: {},
+      pendingSwap: {},
+      available: {},
+      pendingAvailable: {},
+      approve: {},
+      conditionalApprove: {},
+    },
+    contractStatus: {
+      kLast: {},
+    },
+    used: false,
+  };
+  for (const assetType in snapshot.assets) {
+    for (const tick in snapshot.assets[assetType]) {
+      const item = snapshot.assets[assetType][tick];
+      ret.assets[assetType][tick] = new Brc20(
+        _.cloneDeep(item.balance),
+        tick,
+        item.Supply,
+        assetType
+      );
+    }
+  }
+  for (const tick in snapshot.contractStatus.kLast) {
+    ret.contractStatus.kLast[tick] = snapshot.contractStatus.kLast[tick];
+  }
+  return ret;
+}
+
+export async function getSnapshotObjFromDao() {
+  const assetRes = await snapshotAssetDao.find({});
+  const klastRes = await snapshotKLastDao.find({});
+  const suppltRes = await snapshotSupplyDao.find({});
+  const supplyMap = {
+    swap: {},
+    pendingSwap: {},
+    available: {},
+    pendingAvailable: {},
+    approve: {},
+    conditionalApprove: {},
+  };
+  for (let i = 0; i < suppltRes.length; i++) {
+    const item = suppltRes[i];
+    supplyMap[item.assetType][item.tick] = item.supply;
+  }
+
+  const snapshot: SnapshotObj = {
+    assets: {
+      swap: {},
+      pendingSwap: {},
+      available: {},
+      pendingAvailable: {},
+      approve: {},
+      conditionalApprove: {},
+    },
+    contractStatus: {
+      kLast: {},
+    },
+    used: false,
+  };
+  for (let i = 0; i < assetRes.length; i++) {
+    const item = assetRes[i];
+    if (!snapshot.assets[item.assetType][item.tick]) {
+      snapshot.assets[item.assetType][item.tick] = new Brc20(
+        {},
+        item.tick,
+        supplyMap[item.assetType][item.tick],
+        item.assetType
+      );
+    }
+    snapshot.assets[item.assetType][item.tick].balance[item.address] =
+      item.balance;
+  }
+  for (let i = 0; i < klastRes.length; i++) {
+    const item = klastRes[i];
+    snapshot.contractStatus.kLast[item.tick] = item.value;
+  }
+  return snapshot;
 }

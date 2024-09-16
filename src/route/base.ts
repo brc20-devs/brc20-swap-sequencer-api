@@ -1,11 +1,11 @@
 import { FastifyInstance } from "fastify";
 import Joi from "joi";
 
-import { getPairStr, need } from "../contract/contract-utils";
+import { getPairStrV2, need } from "../contract/contract-utils";
 import { MatchingData } from "../dao/matching-dao";
 import { QUERY_LIMIT } from "../domain/constant";
-import { cant_swap, deploy_tick_not_exist } from "../domain/error";
-import { checkAddressType, estimateServerFee } from "../domain/utils";
+import { cant_opt, deploy_tick_not_exist } from "../domain/error";
+import { checkAddressType, estimateServerFee, isLp } from "../domain/utils";
 import { ExactType, FuncType } from "../types/func";
 import {
   AddLiqReq,
@@ -14,27 +14,18 @@ import {
   AddressBalanceRes,
   AllAddressBalanceReq,
   AllAddressBalanceRes,
+  ConditionalWithdrawHistoryItem,
   ConfigReq,
   ConfigRes,
-  ConfirmCancelWithdrawReq,
-  ConfirmCancelWithdrawRes,
   ConfirmDepositReq,
-  ConfirmRetryWithdrawReq,
-  ConfirmRetryWithdrawRes,
-  ConfirmWithdrawReq,
+  ConfirmDirectWithdrawReq,
   ConfirmWithdrawRes,
-  CreateCancelWithdrawReq,
-  CreateCancelWithdrawRes,
   CreateDepositReq,
   CreateDepositRes,
-  CreateRetryWithdrawReq,
-  CreateRetryWithdrawRes,
-  CreateWithdrawReq,
-  CreateWithdrawRes,
+  CreateDirectWithdrawReq,
+  CreateDirectWithdrawRes,
   DeployPoolReq,
   DeployPoolRes,
-  DepositInfoReq,
-  DepositInfoRes,
   DepositListItem,
   DepositListReq,
   DepositListRes,
@@ -85,7 +76,6 @@ import {
   SwapRes,
   SystemStatusReq,
   SystemStatusRes,
-  WithdrawHistoryItem,
   WithdrawHistoryReq,
   WithdrawHistoryRes,
   WithdrawProcessReq,
@@ -155,42 +145,10 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     async (req: Req<AddressBalanceReq, "get">, res: Res<AddressBalanceRes>) => {
       const { address, tick } = req.query;
       await decimal.trySetting(tick);
-      const balance = operator.NewestSpace.getBalance(address, tick);
+      const balance = operator.PendingSpace.getBalance(address, tick);
       void res.send({
         balance,
         decimal: decimal.get(tick),
-      });
-    }
-  );
-
-  fastify.get(
-    `/deposit_info`,
-    schema(
-      Joi.object<DepositInfoReq>({
-        address: Joi.string().required(),
-        tick: Joi.string().required(),
-      }),
-      "get",
-      Joi.object<DepositInfoRes>({
-        dailyAmount: Joi.string().description("Amount deposit on the day."),
-        dailyLimit: Joi.string().description("Limit for the day."),
-        recommendDeposit: Joi.string().description(
-          "Recommended deposit amount."
-        ),
-      }),
-      {
-        summary:
-          "Get deposit information for the specified address and tick, including daily limit, dosage, recommended deposit amount, etc.",
-        apiDoc: true,
-      }
-    ),
-    async (req: Req<DepositInfoReq, "get">, res: Res<DepositInfoRes>) => {
-      const { address, tick } = req.query;
-      await decimal.trySetting(tick);
-      const ret = await query.getDailyDepositLimit(address, tick);
-      void res.send({
-        ...ret,
-        recommendDeposit: matching.getRecommendDeposit(tick),
       });
     }
   );
@@ -222,7 +180,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
       res: Res<AllAddressBalanceRes>
     ) => {
       const { address } = req.query;
-      const ret = operator.NewestSpace.getAllBalance(address);
+      const ret = await query.getAllBalance(address);
       void res.send(ret);
     }
   );
@@ -348,12 +306,12 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
         volume24h: Joi.string(),
         volume7d: Joi.string(),
       }),
-      { summary: "Get Pool information based on trade pair.", apiDoc: false }
+      { summary: "Get Pool information based on trade pair.", apiDoc: true }
     ),
     async (req: Req<PoolInfoReq, "get">, res: Res<PoolInfoRes>) => {
       const { tick0, tick1 } = req.query;
-      const res1 = operator.NewestSpace.getPoolInfo(req.query);
-      const res2 = await query.globalPoolInfo(getPairStr(tick0, tick1));
+      const res1 = query.getPoolInfo(req.query);
+      const res2 = await query.globalPoolInfo(getPairStrV2(tick0, tick1));
       void res.send({ ...res1, ...res2 });
     }
   );
@@ -383,7 +341,11 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
       }
     ),
     async (req: Req<SelectReq, "get">, res: Res<SelectRes>) => {
-      const ret = await operator.NewestSpace.getSelect(req.query);
+      let ret = await query.getSelect(req.query);
+      // test
+      ret = ret.filter((item) => {
+        return !item.tick.toLowerCase().includes("unisat_");
+      });
       void res.send(ret);
     }
   );
@@ -720,6 +682,32 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
   );
 
   fastify.post(
+    `/send_lp`,
+    schema(
+      Joi.object<SendReq>({
+        address: Joi.string().required(),
+        tick: Joi.string().required().description("Send tick"),
+        amount: Joi.string().required().description("The amount of send tick"),
+        to: Joi.string().required().description("The receiver of send tick"),
+        ts: Joi.number().required().description("Timestamp (seconds)"),
+        sig: Joi.string().required().description("User signature"),
+      }),
+      "post",
+      Joi.object<SendRes>({}),
+      { summary: "The send operation.", apiDoc: true }
+    ),
+    async (req: Req<SendReq, "post">, res: Res<SendRes>) => {
+      checkAddressType(req.body.address);
+      need(isLp(req.body.tick), cant_opt);
+      const ret = await operator.aggregate({
+        func: FuncType.sendLp,
+        req: req.body,
+      });
+      void res.send(ret);
+    }
+  );
+
+  fastify.post(
     `/send`,
     schema(
       Joi.object<SendReq>({
@@ -736,11 +724,12 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     ),
     async (req: Req<SendReq, "post">, res: Res<SendRes>) => {
       checkAddressType(req.body.address);
+      need(!isLp(req.body.tick), cant_opt);
       const ret = await operator.aggregate({
         func: FuncType.send,
         req: req.body,
       });
-      void res.send(ret); // TOFIX
+      void res.send(ret);
     }
   );
 
@@ -782,7 +771,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     ),
     async (req: Req<SwapReq, "post">, res: Res<SwapRes>) => {
       checkAddressType(req.body.address);
-      need(config.canSwap, cant_swap);
+      need(!config.binOpts.includes("swap"), cant_opt);
       const ret = (await operator.aggregate({
         func: FuncType.swap,
         req: req.body,
@@ -1038,8 +1027,8 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     `/rollup_history`,
     schema(
       Joi.object<RollUpHistoryReq>({
-        start: Joi.number().required(),
-        limit: Joi.number().less(100).required(),
+        start: Joi.number().less(100).required(),
+        limit: Joi.number().less(1000).required(),
       }),
       "get",
       Joi.object<RollUpHistoryRes>({
@@ -1121,7 +1110,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     ),
     async (req: Req<CreateDepositReq, "get">, res: Res<CreateDepositRes>) => {
       checkAddressType(req.query.address);
-      const ret = await matching.create(req.query);
+      const ret = await deposit.create(req.query);
       void res.send(ret);
     }
   );
@@ -1141,7 +1130,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
       }
     ),
     async (req: Req<ConfirmDepositReq, "post">, res) => {
-      const ret = await matching.confirm(req.body);
+      const ret = await deposit.confirm(req.body);
       void res.send(ret);
     }
   );
@@ -1160,7 +1149,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     ),
     async (req: Req<SystemStatusReq, "get">, res: Res<SystemStatusRes>) => {
       void res.send({
-        committing: opSender.Committing,
+        committing: sender.Committing,
       });
     }
   );
@@ -1178,7 +1167,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
       Joi.object<WithdrawHistoryRes>({
         total: Joi.number(),
         list: Joi.array().items(
-          Joi.object<WithdrawHistoryItem>({
+          Joi.object<ConditionalWithdrawHistoryItem>({
             id: Joi.string(),
             tick: Joi.string(),
             totalAmount: Joi.string().description("Total amount withdrawal"),
@@ -1193,6 +1182,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
               "The total number of confirmations"
             ),
             status: Joi.string(),
+            type: Joi.string(),
           })
         ),
       }),
@@ -1207,64 +1197,64 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
     }
   );
 
-  fastify.get(
-    `/create_retry_withdraw`,
-    schema(
-      Joi.object<CreateRetryWithdrawReq>({
-        id: Joi.string().required(),
-        pubkey: Joi.string().required(),
-        address: Joi.string().required(),
-      }),
-      "get",
-      Joi.object<CreateRetryWithdrawRes>({
-        paymentPsbt: Joi.string().description("The user psbt with payment"),
-        approvePsbt: Joi.string().description(
-          "The user psbt with approve insctiption"
-        ),
-        networkFee: Joi.number(),
-      }),
-      {
-        summary: "Retry create a withdraw psbt to be signed by the user.",
-        apiDoc: true,
-      }
-    ),
-    async (
-      req: Req<CreateRetryWithdrawReq, "get">,
-      res: Res<CreateRetryWithdrawRes>
-    ) => {
-      const ret = await withdraw.createRetry(req.query);
-      void res.send(ret);
-    }
-  );
+  // fastify.get(
+  //   `/create_retry_withdraw`,
+  //   schema(
+  //     Joi.object<CreateRetryWithdrawReq>({
+  //       id: Joi.string().required(),
+  //       pubkey: Joi.string().required(),
+  //       address: Joi.string().required(),
+  //     }),
+  //     "get",
+  //     Joi.object<CreateRetryWithdrawRes>({
+  //       paymentPsbt: Joi.string().description("The user psbt with payment"),
+  //       approvePsbt: Joi.string().description(
+  //         "The user psbt with approve insctiption"
+  //       ),
+  //       networkFee: Joi.number(),
+  //     }),
+  //     {
+  //       summary: "Retry create a withdraw psbt to be signed by the user.",
+  //       apiDoc: true,
+  //     }
+  //   ),
+  //   async (
+  //     req: Req<CreateRetryWithdrawReq, "get">,
+  //     res: Res<CreateRetryWithdrawRes>
+  //   ) => {
+  //     const ret = await withdraw.createRetry(req.query);
+  //     void res.send(ret);
+  //   }
+  // );
 
-  fastify.post(
-    `/confirm_retry_withdraw`,
-    schema(
-      Joi.object<ConfirmRetryWithdrawReq>({
-        id: Joi.string().required().description("The withdraw order id"),
-        paymentPsbt: Joi.string().required(),
-        approvePsbt: Joi.string().required(),
-      }),
-      "post",
-      Joi.object<ConfirmRetryWithdrawRes>({}),
-      {
-        summary: "User signature withdraw psbt, submit confirmation.",
-        apiDoc: true,
-      }
-    ),
-    async (
-      req: Req<ConfirmRetryWithdrawReq, "post">,
-      res: Res<ConfirmRetryWithdrawRes>
-    ) => {
-      const ret = await withdraw.confirmRetry(req.body);
-      void res.send(ret);
-    }
-  );
+  // fastify.post(
+  //   `/confirm_retry_withdraw`,
+  //   schema(
+  //     Joi.object<ConfirmRetryWithdrawReq>({
+  //       id: Joi.string().required().description("The withdraw order id"),
+  //       paymentPsbt: Joi.string().required(),
+  //       approvePsbt: Joi.string().required(),
+  //     }),
+  //     "post",
+  //     Joi.object<ConfirmRetryWithdrawRes>({}),
+  //     {
+  //       summary: "User signature withdraw psbt, submit confirmation.",
+  //       apiDoc: true,
+  //     }
+  //   ),
+  //   async (
+  //     req: Req<ConfirmRetryWithdrawReq, "post">,
+  //     res: Res<ConfirmRetryWithdrawRes>
+  //   ) => {
+  //     const ret = await withdraw.confirmRetry(req.body);
+  //     void res.send(ret);
+  //   }
+  // );
 
   fastify.get(
     `/create_withdraw`,
     schema(
-      Joi.object<CreateWithdrawReq>({
+      Joi.object<CreateDirectWithdrawReq>({
         pubkey: Joi.string().required(),
         address: Joi.string().required(),
         tick: Joi.string().required(),
@@ -1272,33 +1262,17 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
         ts: Joi.number().required(),
       }),
       "get",
-      Joi.object<CreateWithdrawRes>({
-        id: Joi.string().description("The withdraw order id"),
-        paymentPsbt: Joi.string().description("The user psbt with payment"),
-        approvePsbt: Joi.string().description(
-          "The user psbt with approve insctiption"
-        ),
-        networkFee: Joi.number(),
-        signMsg: Joi.string().description("User signature information"),
-        bytesL1: Joi.number().description("Number of bytes on L1 chain"),
-        bytesL2: Joi.number().description("Number of bytes on L1 chain"),
-        feeRate: Joi.string().description("Bitcoin network fee rate"),
-        gasPrice: Joi.string().description("L2 cost per byte"),
-        serviceFeeL1: Joi.string(),
-        serviceFeeL2: Joi.string(),
-        unitUsdPriceL1: Joi.string().description("L1 USD price per sats"),
-        unitUsdPriceL2: Joi.string().description("L2 USD price per sats"),
-        serviceTickBalance: Joi.string().description(
-          "The user's remainin L2 sats balance"
-        ),
-      }),
+      Joi.object<CreateDirectWithdrawRes>({}),
       {
         summary: "Create a withdraw psbt to be signed by the user.",
         apiDoc: true,
       }
     ),
-    async (req: Req<CreateWithdrawReq, "get">, res: Res<CreateWithdrawRes>) => {
-      const ret = await withdraw.create(req.query);
+    async (
+      req: Req<CreateDirectWithdrawReq, "get">,
+      res: Res<CreateDirectWithdrawRes>
+    ) => {
+      const ret = await directWithdraw.create(req.query);
       void res.send(ret);
     }
   );
@@ -1306,7 +1280,7 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
   fastify.post(
     `/confirm_withdraw`,
     schema(
-      Joi.object<ConfirmWithdrawReq>({
+      Joi.object<ConfirmDirectWithdrawReq>({
         id: Joi.string().required().description("The withdraw order id"),
         sig: Joi.string().required(),
         paymentPsbt: Joi.string().required(),
@@ -1320,62 +1294,65 @@ export function baseRoute(fastify: FastifyInstance, opts, done) {
       }
     ),
     async (
-      req: Req<ConfirmWithdrawReq, "post">,
+      req: Req<ConfirmDirectWithdrawReq, "post">,
       res: Res<ConfirmWithdrawRes>
     ) => {
-      const ret = await withdraw.confirm(req.body);
+      need(!config.binOpts.includes("conditional-approve"), cant_opt);
+      const ret = await directWithdraw.confirm(req.body);
       void res.send(ret);
     }
   );
 
-  fastify.get(
-    `/create_cancel_withdraw`,
-    schema(
-      Joi.object<CreateCancelWithdrawReq>({
-        id: Joi.string().required(),
-      }),
-      "get",
-      Joi.object<CreateCancelWithdrawRes>({
-        id: Joi.string(),
-        psbt: Joi.string(),
-        networkFee: Joi.number(),
-      }),
-      {
-        summary: "Create a cancel-withdraw psbt to be signed by the user.",
-        apiDoc: true,
-      }
-    ),
-    async (
-      req: Req<CreateCancelWithdrawReq, "get">,
-      res: Res<CreateCancelWithdrawRes>
-    ) => {
-      const ret = await withdraw.createCancel(req.query);
-      void res.send(ret);
-    }
-  );
+  // fastify.get(
+  //   `/create_cancel_withdraw`,
+  //   schema(
+  //     Joi.object<CreateCancelWithdrawReq>({
+  //       id: Joi.string().required(),
+  //     }),
+  //     "get",
+  //     Joi.object<CreateCancelWithdrawRes>({
+  //       id: Joi.string(),
+  //       psbt: Joi.string(),
+  //       networkFee: Joi.number(),
+  //     }),
+  //     {
+  //       summary: "Create a cancel-withdraw psbt to be signed by the user.",
+  //       apiDoc: true,
+  //     }
+  //   ),
+  //   async (
+  //     req: Req<CreateCancelWithdrawReq, "get">,
+  //     res: Res<CreateCancelWithdrawRes>
+  //   ) => {
+  //     need(!config.binOpts.includes("conditional-approve"), cant_opt);
+  //     const ret = await withdraw.createCancel(req.query);
+  //     void res.send(ret);
+  //   }
+  // );
 
-  fastify.post(
-    `/confirm_cancel_withdraw`,
-    schema(
-      Joi.object<ConfirmCancelWithdrawReq>({
-        id: Joi.string().required(),
-        psbt: Joi.string().required(),
-      }),
-      "post",
-      Joi.object<ConfirmCancelWithdrawRes>({}),
-      {
-        summary: "User signature cancel-withdraw psbt, submit confirmation.",
-        apiDoc: true,
-      }
-    ),
-    async (
-      req: Req<ConfirmCancelWithdrawReq, "post">,
-      res: Res<ConfirmCancelWithdrawRes>
-    ) => {
-      const ret = await withdraw.confirmCancel(req.body);
-      void res.send(ret);
-    }
-  );
+  // fastify.post(
+  //   `/confirm_cancel_withdraw`,
+  //   schema(
+  //     Joi.object<ConfirmCancelWithdrawReq>({
+  //       id: Joi.string().required(),
+  //       psbt: Joi.string().required(),
+  //     }),
+  //     "post",
+  //     Joi.object<ConfirmCancelWithdrawRes>({}),
+  //     {
+  //       summary: "User signature cancel-withdraw psbt, submit confirmation.",
+  //       apiDoc: true,
+  //     }
+  //   ),
+  //   async (
+  //     req: Req<ConfirmCancelWithdrawReq, "post">,
+  //     res: Res<ConfirmCancelWithdrawRes>
+  //   ) => {
+  //     need(!config.binOpts.includes("conditional-approve"), cant_opt);
+  //     const ret = await withdraw.confirmCancel(req.body);
+  //     void res.send(ret);
+  //   }
+  // );
 
   fastify.get(
     `/withdraw_process`,

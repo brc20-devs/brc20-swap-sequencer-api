@@ -1,6 +1,7 @@
 import { bn, uintCal } from "./bn";
 import { Brc20 } from "./brc20";
-import { getPairStr, need } from "./contract-utils";
+import { getPairStrV2, need } from "./contract-utils";
+import { Observer } from "./observer";
 
 type AssetType =
   // swap
@@ -12,26 +13,39 @@ type AssetType =
   | "approve"
   | "conditionalApprove";
 
-export class Assets {
-  // assetType --> tick --> brc20
-  private map: { [key: string]: { [key: string]: Brc20 } } = {};
+export const allAssetType = [
+  "swap",
+  "pendingSwap",
+  "available",
+  "pendingAvailable",
+  "approve",
+  "conditionalApprove",
+];
 
-  constructor(map: {
-    [key: string]: { [key: string]: { balance: any; tick: string } };
-  }) {
-    for (const assetType in map) {
-      for (const tick in map[assetType]) {
-        const brc20 = new Brc20(
-          map[assetType][tick].balance,
-          map[assetType][tick].tick
-        );
-        map[assetType][tick] = brc20;
+export type NotifyAssetData = {
+  assetType: string;
+  tick: string;
+  address: string;
+  balance: string;
+};
+
+export class Assets {
+  private map: { [assetType: string]: { [tick: string]: Brc20 } } = {};
+  private observer: Observer;
+  setObserver(observer: Observer) {
+    this.observer = observer;
+    for (const assetType in this.map) {
+      for (const tick in this.map[assetType]) {
+        this.map[assetType][tick].setObserver(observer);
       }
     }
-    this.map = map as any;
   }
 
-  getAvaiableAssets(address: string) {
+  constructor(map: { [assetType: string]: { [tick: string]: Brc20 } }) {
+    this.map = map;
+  }
+
+  private getAvaiableAssets(address: string) {
     let set = new Set<string>();
     for (const assetType in this.map) {
       for (const tick in this.map[assetType]) {
@@ -48,7 +62,17 @@ export class Assets {
   tryCreate(tick: string) {
     for (let assetType in this.map) {
       if (!this.map[assetType][tick]) {
-        this.map[assetType][tick] = new Brc20({}, tick);
+        this.map[assetType][tick] = new Brc20({}, tick, "0", assetType);
+        this.map[assetType][tick].setObserver(this.observer);
+
+        if (this.observer) {
+          this.observer.notify<NotifyAssetData>("asset", {
+            assetType,
+            tick,
+            address: "0",
+            balance: "0",
+          });
+        }
       }
     }
   }
@@ -136,7 +160,7 @@ export class Assets {
     amountOut: string,
     assetType: AssetType = "swap"
   ) {
-    const pair = getPairStr(tickIn, tickOut);
+    const pair = getPairStrV2(tickIn, tickOut);
     this.map[assetType][tickIn].transfer(address, pair, amountIn);
     this.map[assetType][tickOut].transfer(pair, address, amountOut);
   }

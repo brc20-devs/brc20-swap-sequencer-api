@@ -1,19 +1,18 @@
-import { CommitOp, OpEvent } from "../types/op";
-import { need } from "./utils";
+import { CommitOp } from "../types/op";
+import { getConfirmedNum, need, sysFatal } from "./utils";
 
 import { Wallet, bitcoin, printPsbt } from "../lib/bitcoin";
 import { generateCommitTxs } from "../lib/tx-helpers/commit-helper";
 import { UTXO } from "../types/api";
-import { printErr } from "../utils/utils";
-import { MAX_HEIGHT } from "./constant";
-import { CodeEnum } from "./error";
+import { loggerError } from "../utils/utils";
+import { MAX_OP_SIZE, TX_CONFIRM_NUM, UNCONFIRM_HEIGHT } from "./constant";
+import { CodeEnum, internal_server_error } from "./error";
 
-export class OpSender {
-  private wallet: Wallet;
+const TAG = "sender";
+
+export class Sender {
   private commiting = false;
-  private lastCommitOp: CommitOp;
-  private lastInscriptionId: string;
-  private currentHeight = 0;
+  private lastHandledHeight = 0;
   private tryCommitCount = 0;
 
   get TryCommitCount() {
@@ -21,62 +20,37 @@ export class OpSender {
   }
 
   get Committing() {
-    const ret = this.commiting;
-    if (ret)
-      logger.info({
-        tag: "commiting-info",
-        commiting: this.commiting,
-        parent: operator.CommitData.op.parent,
-      });
-
-    return ret;
-  }
-
-  get LastCommitOp() {
-    return this.lastCommitOp;
-  }
-
-  get LastInscriptionId() {
-    return this.lastInscriptionId;
+    return this.commiting;
   }
 
   constructor() {}
 
-  async init() {
-    const res = await opCommitDao.findLastCommitOp();
-    this.lastCommitOp = res?.op;
-    this.lastInscriptionId = res?.inscriptionId || "";
-    if (!this.lastCommitOp) {
-      this.lastCommitOp = (opBuilder.LastCommitOpEvent?.op as any) || null;
-      this.lastInscriptionId = opBuilder.LastCommitOpEvent?.inscriptionId || "";
-    }
-  }
+  async init() {}
 
-  async rebuild(from: OpEvent) {
-    // TODO
-  }
+  async pushCommitOp(op: CommitOp) {
+    console.log("commit begin, parent: " + op.parent);
 
-  async createCommit(op: CommitOp) {
-    console.log("commit begin");
     this.commiting = true;
-
-    let canWaitNextTurn = true;
-    // const opSize = JSON.stringify(op).length;
-    // if (opSize > MAX_OP_SIZE) {
-    //   canWaitNextTurn = false;
-    // }
-
-    let successCommit = false;
+    let fatalError = false;
     this.tryCommitCount++;
-
     try {
-      let feeRate = 1;
-      try {
-        feeRate = await api.feeRate();
-      } catch (e) {
-        need(false, null, CodeEnum.internal_api_error);
+      need(op.parent == operator.NewestCommitData.op.parent);
+
+      const res = await sequencerTxDao.find({
+        parent: op.parent,
+      });
+      if (res.length) {
+        sysFatal({ tag: TAG, msg: "repeated parent op", parent: op.parent });
       }
+
+      const opSize = JSON.stringify(op).length;
+      if (opSize > MAX_OP_SIZE) {
+        sysFatal({ tag: TAG, msg: "opSize too big", parent: op.parent });
+      }
+
+      let feeRate = env.FeeRate;
       feeRate = feeRate * config.commitFeeRateRatio;
+      need(!!feeRate, internal_server_error, CodeEnum.internal_api_error);
 
       const utxoA = (
         await sequencerUtxoDao.find(
@@ -88,7 +62,7 @@ export class OpSender {
           { sort: { satoshi: -1 } }
         )
       )[0];
-      logger.info({ tag: "utxoA", utxoA });
+      logger.info({ tag: TAG, msg: "utxoA", utxoA });
 
       need(!!utxoA, "utxoA not enough", CodeEnum.sequencer_insufficient_funds);
 
@@ -102,15 +76,19 @@ export class OpSender {
           { sort: { satoshi: -1 } }
         )
       )[0];
-      logger.info({ tag: "utxoB", utxoB });
+      logger.info({ tag: TAG, msg: "utxoB", utxoB });
 
       need(!!utxoB, "utxoB not enough", CodeEnum.sequencer_insufficient_funds);
 
-      const utxoC = await sequencerUtxoDao.findOne({
+      const utxoCRes = await sequencerUtxoDao.find({
         used: "unused",
         purpose: "sequence",
       });
-      logger.info({ tag: "utxoC", utxoC });
+      if (utxoCRes.length > 1) {
+        sysFatal({ tag: TAG, msg: "utxoC num error", num: utxoCRes.length });
+      }
+      const utxoC = utxoCRes[0];
+      logger.info({ tag: TAG, msg: "utxoC", utxoC });
 
       need(!!utxoC, "utxoC not enough", CodeEnum.sequencer_insufficient_funds);
 
@@ -125,7 +103,15 @@ export class OpSender {
       let seqWallet: Wallet = keyring.btcWallet;
       let seqUtxo: UTXO = utxoC;
 
-      logger.info({ tag: "commit-txs", feeRate, utxoA, utxoB, utxoC });
+      logger.info({
+        tag: TAG,
+        msg: "commit-txs",
+        parent: op.parent,
+        feeRate,
+        utxoA,
+        utxoB,
+        utxoC,
+      });
 
       const commitResult = generateCommitTxs({
         op,
@@ -146,6 +132,7 @@ export class OpSender {
         {
           $set: {
             used: "locked",
+            parent: op.parent,
           },
         }
       );
@@ -157,6 +144,7 @@ export class OpSender {
         {
           $set: {
             used: "locked",
+            parent: op.parent,
           },
         }
       );
@@ -169,6 +157,7 @@ export class OpSender {
         {
           $set: {
             used: "locked",
+            parent: op.parent,
           },
         }
       );
@@ -178,6 +167,7 @@ export class OpSender {
           used: "unused",
           status: "unconfirmed",
           purpose: "inscribe",
+          parent: op.parent,
         }) as any
       );
 
@@ -186,6 +176,7 @@ export class OpSender {
           used: "unused",
           status: "unconfirmed",
           purpose: "activate",
+          parent: op.parent,
         }) as any
       );
 
@@ -194,10 +185,9 @@ export class OpSender {
           used: "unused",
           status: "unconfirmed",
           purpose: "sequence",
+          parent: op.parent,
         }) as any
       );
-
-      // sequencerWallet sign with API
 
       const psbt1 = bitcoin.Psbt.fromHex(commitResult.tx1.psbtHex, { network });
       commitResult.tx1.toSignInputs.forEach((v) => {
@@ -257,20 +247,21 @@ export class OpSender {
         },
       ];
 
-      let fatal_error = false;
       for (let i = 0; i < txs.length; i++) {
         const tx = txs[i];
         let success = true;
         try {
+          await api.broadcast2(tx.rawtx);
+        } catch (err) {}
+        try {
           await api.broadcast(tx.rawtx);
         } catch (err) {
-          printErr("createCommit-pushtx", err);
           success = false;
           if (
             err.message.includes("conflict") ||
             err.message.includes("missing")
           ) {
-            fatal_error = true;
+            fatalError = true;
           }
         }
         await sequencerTxDao.insert({
@@ -281,173 +272,217 @@ export class OpSender {
           height: 0,
           feeRate,
           fee: tx.fee,
+          parent: op.parent,
+          timestamp: Date.now(),
         });
       }
 
-      if (fatal_error) {
-        canWaitNextTurn = false;
-        global.fatal = true;
-        throw new Error("Stop Commiting");
+      if (fatalError) {
+        let unusedA = false;
+        let unusedB = false;
+        let unusedC = false;
+        try {
+          const res = await api.utxo(utxoA.txid, utxoA.vout);
+          if (res) {
+            unusedA = true;
+          }
+        } catch (err) {}
+        try {
+          const res = await api.utxo(utxoB.txid, utxoB.vout);
+          if (res) {
+            unusedB = true;
+          }
+        } catch (err) {}
+        try {
+          const res = await api.utxo(utxoB.txid, utxoB.vout);
+          if (res) {
+            unusedB = true;
+          }
+        } catch (err) {}
+        sysFatal({
+          tag: TAG,
+          msg: "tx-fatal",
+          utxoA,
+          utxoB,
+          utxoC,
+          unusedA,
+          unusedB,
+          unusedC,
+        });
       }
 
       await opCommitDao.upsertByParent(op.parent, {
         inscriptionId: commitResult.inscriptionId,
         txid: commitResult.tx3.txid,
       });
-      this.lastInscriptionId = commitResult.inscriptionId;
-      this.lastCommitOp = op;
+      operator.NewestCommitData.inscriptionId = commitResult.inscriptionId;
 
-      successCommit = true;
       this.tryCommitCount = 0;
     } finally {
-      console.log("commit finish");
-      if (successCommit) {
-        this.commiting = false;
-      } else {
-        if (canWaitNextTurn) {
-          // let's commit in next turn
-          this.commiting = false;
-        } else {
-          // no fatal error
-          this.commiting = true;
-        }
-      }
+      this.commiting = false;
     }
+    console.log("commit end");
   }
 
-  // check if new block is mined
-  async checkNewBlock() {
+  async updateSequencerDao() {
     const blockHeight = await api.blockHeight();
-    if (blockHeight !== this.currentHeight) {
-      this.currentHeight = blockHeight;
-      await this.tickNewBlock();
-    }
-  }
+    if (blockHeight !== this.lastHandledHeight) {
+      this.lastHandledHeight = blockHeight;
+      logger.debug({ tag: TAG, msg: "update-sequencer", height: blockHeight });
 
-  // trigger when new block is mined
-  async tickNewBlock() {
-    console.log("tickNewBlock");
-    // update sequencer utxo status
-    // unconfrimed -> confirmed
-    try {
+      // update sequencer utxo status
+      // unconfrimed -> confirmed
       const utxos = await sequencerUtxoDao.find({
         status: "unconfirmed",
       });
       for (let i = 0; i < utxos.length; i++) {
         const utxo = utxos[i];
         try {
-          console.log("checking utxo", utxo.txid, utxo.vout, utxo.satoshi);
+          logger.debug({
+            tag: TAG,
+            msg: "check-utxo",
+            txid: utxo.txid,
+            vout: utxo.vout,
+          });
           const txInfo = await api.txInfo(utxo.txid);
-          if (txInfo.height !== MAX_HEIGHT) {
-            const matchedCount = await sequencerUtxoDao.updateOne(
+          if (getConfirmedNum(txInfo.height) > 0) {
+            await sequencerUtxoDao.updateOne(
               { txid: utxo.txid, vout: utxo.vout },
               { $set: { status: "confirmed" } }
             );
-            console.log("utxo confirmed", utxo.txid, utxo.vout, matchedCount);
           } else {
-            console.log("utxo unconfirmed", utxo.txid, utxo.vout);
+            //
           }
-        } catch (e) {
-          console.log("utxo update failed", utxo.txid, utxo.vout, e);
+        } catch (err) {
+          logger.error({
+            tag: TAG,
+            msg: "commit-utxo-check",
+            txid: utxo.txid,
+            vout: utxo.vout,
+            error: err.message,
+          });
         }
       }
-    } catch (err) {
-      printErr("op-sender update sequencer utxo failed", err);
-    }
 
-    // update commit txs status
-    // pending -> unconfirmed
-    try {
-      const txs = await sequencerTxDao.find({ status: "pending" });
+      // update commit txs status
+      // pending -> unconfirmed
+      let txs = await sequencerTxDao.find({
+        status: { $in: ["pending"] },
+      });
       for (let i = 0; i < txs.length; i++) {
         const tx = txs[i];
+        try {
+          await api.broadcast2(tx.rawtx);
+        } catch (err) {}
         try {
           await api.broadcast(tx.rawtx);
           await sequencerTxDao.updateOne(
             { txid: tx.txid },
             { $set: { status: "unconfirmed" } }
           );
-        } catch (e) {
-          if (e.message == "Transaction already in block chain") {
+        } catch (err) {
+          if (err.message == "Transaction already in block chain") {
             await sequencerTxDao.updateOne(
               { txid: tx.txid },
-              { $set: { status: "unconfirmed", height: MAX_HEIGHT } }
+              {
+                $set: {
+                  status: "unconfirmed",
+                  height: UNCONFIRM_HEIGHT,
+                },
+              }
             );
+          } else {
+            logger.error({
+              tag: TAG,
+              msg: "commit-tx-broadcast",
+              txid: tx.txid,
+              error: err.message,
+            });
           }
         }
       }
-    } catch (err) {
-      printErr("op-sender", err);
-    }
 
-    // update commit txs status
-    // unconfirmed -> confirmed
-    try {
-      const txs = await sequencerTxDao.find({ status: "unconfirmed" });
+      // update commit txs status
+      // unconfirmed -> confirmed
+      txs = await sequencerTxDao.find({ status: "unconfirmed" });
       for (let i = 0; i < txs.length; i++) {
         const tx = txs[i];
-        const info = await api.txInfo(tx.txid);
-        if (info && info.height !== MAX_HEIGHT) {
-          await sequencerTxDao.updateOne(
-            { txid: tx.txid },
-            { $set: { status: "confirmed", height: info.height } }
-          );
+        try {
+          const info = await api.txInfo(tx.txid);
+          if (info && getConfirmedNum(info.height) > TX_CONFIRM_NUM) {
+            await sequencerTxDao.updateOne(
+              { txid: tx.txid },
+              {
+                $set: {
+                  status: "confirmed",
+                  height: info.height,
+                },
+              }
+            );
+          }
+        } catch (err) {
+          logger.error({
+            tag: TAG,
+            msg: "commit-tx-confirm",
+            txid: tx.txid,
+            error: err.message,
+          });
         }
       }
-    } catch (err) {
-      printErr("op-sender", err);
     }
   }
 
-  // trigger every 3 seconds
-  async tick() {
-    try {
-      await this.checkNewBlock();
-
-      const A = await sequencerUtxoDao.find(
-        {
-          status: "confirmed",
-          used: "unused",
-          purpose: "inscribe",
-        },
-        { sort: { satoshi: -1 } }
-      );
-      const B = await sequencerUtxoDao.find(
-        {
-          status: "confirmed",
-          used: "unused",
-          purpose: "activate",
-        },
-        { sort: { satoshi: -1 } }
-      );
-      metric.nextUtxoA.set(A[0] ? A[0].satoshi : 0);
-      metric.nextUtxoB.set(B[0] ? B[0].satoshi : 0);
-      metric.estimatedCostUtxoB.set(env.FeeRate * 320);
-      const opSize = JSON.stringify(operator.CommitData.op).length;
-      metric.estimatedCostUtxoA.set((153 + 109 + opSize / 4) * env.FeeRate);
-
-      let res = await sequencerUtxoDao.find({
+  async updateMetric() {
+    const A = await sequencerUtxoDao.find(
+      {
         status: "confirmed",
         used: "unused",
-      });
-      let total = 0;
-      for (let i = 0; i < res.length; i++) {
-        const item = res[i];
-        total += item.satoshi;
-      }
-      metric.totalUtxoBalance.set(total);
+        purpose: "inscribe",
+      },
+      { sort: { satoshi: -1 } }
+    );
+    const B = await sequencerUtxoDao.find(
+      {
+        status: "confirmed",
+        used: "unused",
+        purpose: "activate",
+      },
+      { sort: { satoshi: -1 } }
+    );
+    metric.nextUtxoA.set(A[0] ? A[0].satoshi : 0);
+    metric.nextUtxoB.set(B[0] ? B[0].satoshi : 0);
+    metric.estimatedCostUtxoB.set(env.FeeRate * 320);
+    const opSize = JSON.stringify(operator.NewestCommitData.op).length;
+    metric.estimatedCostUtxoA.set((153 + 109 + opSize / 4) * env.FeeRate);
 
-      const res2 = await sequencerTxDao.find({});
-      total = 0;
-      for (let i = 0; i < res2.length; i++) {
-        const item = res2[i];
-        if (item.fee) {
-          total += item.fee;
-        }
+    let res = await sequencerUtxoDao.find({
+      status: "confirmed",
+      used: "unused",
+    });
+    let total = 0;
+    for (let i = 0; i < res.length; i++) {
+      const item = res[i];
+      total += item.satoshi;
+    }
+    metric.totalUtxoBalance.set(total);
+
+    const res2 = await sequencerTxDao.find({});
+    total = 0;
+    for (let i = 0; i < res2.length; i++) {
+      const item = res2[i];
+      if (item.fee) {
+        total += item.fee;
       }
-      metric.costUtxoBalance.set(total);
+    }
+    metric.costUtxoBalance.set(total);
+  }
+
+  async tick() {
+    try {
+      await this.updateSequencerDao();
+      await this.updateMetric();
     } catch (err) {
-      printErr("op-sender checkNewBlock failed", err);
+      loggerError("sender-tick", err);
     }
   }
 }

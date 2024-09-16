@@ -1,11 +1,17 @@
 (function (global, factory) {
-  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports, require('lodash'), require('bignumber.js')) :
-  typeof define === 'function' && define.amd ? define(['exports', 'lodash', 'bignumber.js'], factory) :
-  (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.Validator = {}, global._, global.BigNumber));
-})(this, (function (exports, _, BigNumber) { 'use strict';
+  typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports, require('bignumber.js')) :
+  typeof define === 'function' && define.amd ? define(['exports', 'bignumber.js'], factory) :
+  (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.Validator = {}, global.BigNumber));
+})(this, (function (exports, BigNumber) { 'use strict';
 
   const LP_DECIMAL = "18";
   const DEFAULT_DECIMAL = "18";
+  ({
+      FRACTAL_BITCOIN_MAINNET: "FB",
+      BITCOIN_MAINNET: "BTC",
+      BITCOIN_TESTNET: "tBTC",
+      FRACTAL_BITCOIN_TESTNET: "tFB",
+  })[process.env.BITCOIN_NETWORK];
 
   function sortTickParams(_params) {
       const params = _params;
@@ -20,9 +26,27 @@
           return ret;
       }
   }
-  function getPairStr(tick0, tick1) {
+  const str32 = "0123456789abcdefghijklmnopqrstuvwxyz";
+  function convert10To32(n) {
+      need(n >= 0 && n < 32);
+      return str32[n];
+  }
+  function convert32To10(n) {
+      need(n.length == 1 && str32.includes(n));
+      return str32.indexOf(n);
+  }
+  function getPairStrV2(tick0, tick1) {
       const params = sortTickParams({ tick0, tick1 });
-      return `${params.tick0}/${params.tick1}`;
+      return `${convert10To32(Buffer.from(params.tick0).length)}/${params.tick0}${params.tick1}`;
+  }
+  function getPairStructV2(pair) {
+      const len = convert32To10(pair[0]);
+      need(!Number.isNaN(len));
+      need(pair[1] == "/");
+      const tick0 = pair.substring(1 + 1, len + 2);
+      const tick1 = pair.substring(len + 2);
+      need(getPairStrV2(tick0, tick1) == pair, `pair: ${pair}, tick0: ${tick0}, tick1: ${tick1}, repair: ${getPairStrV2(tick0, tick1)}`);
+      return { tick0, tick1 };
   }
   function need(condition, message) {
       if (!condition) {
@@ -127,17 +151,18 @@
   }
 
   class Brc20 {
-      constructor(balance, tick) {
+      setObserver(observer) {
+          this.observer = observer;
+      }
+      constructor(balance, tick, supply, assetType) {
           this.balance = {};
           this.balance = balance;
           this.tick = tick;
-          this._supply = "0";
-          for (const address in this.balance) {
-              this._supply = uintCal([this._supply, "add", this.balance[address]]);
-          }
+          this.supply = supply;
+          this.assetType = assetType;
       }
-      get supply() {
-          return this._supply;
+      get Supply() {
+          return this.supply;
       }
       balanceOf(address) {
           return this.balance[address] || "0";
@@ -149,6 +174,20 @@
           this.balance[to] = uintCal([this.balance[to] || "0", "add", amount]);
           this.checkAddress(from);
           this.checkAddress(to);
+          if (this.observer) {
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address: from,
+                  balance: this.balanceOf(from),
+              });
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address: to,
+                  balance: this.balanceOf(to),
+              });
+          }
       }
       mint(address, amount) {
           this.checkAmount(amount);
@@ -157,8 +196,16 @@
               "add",
               amount,
           ]);
-          this._supply = uintCal([this._supply, "add", amount]);
+          this.supply = uintCal([this.supply, "add", amount]);
           this.checkAddress(address);
+          if (this.observer) {
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address,
+                  balance: this.balanceOf(address),
+              });
+          }
       }
       burn(address, amount) {
           this.checkAmount(amount);
@@ -168,8 +215,16 @@
               "sub",
               amount,
           ]);
-          this._supply = uintCal([this._supply, "sub", amount]);
+          this.supply = uintCal([this.supply, "sub", amount]);
           this.checkAddress(address);
+          if (this.observer) {
+              this.observer.notify("asset", {
+                  assetType: this.assetType,
+                  tick: this.tick,
+                  address,
+                  balance: this.balanceOf(address),
+              });
+          }
       }
       checkAmount(amount) {
           need(bn(amount).gt("0"), "invalid amount: " + this.tick);
@@ -180,14 +235,16 @@
   }
 
   class Assets {
-      constructor(map) {
-          this.map = {};
-          for (const assetType in map) {
-              for (const tick in map[assetType]) {
-                  const brc20 = new Brc20(map[assetType][tick].balance, map[assetType][tick].tick);
-                  map[assetType][tick] = brc20;
+      setObserver(observer) {
+          this.observer = observer;
+          for (const assetType in this.map) {
+              for (const tick in this.map[assetType]) {
+                  this.map[assetType][tick].setObserver(observer);
               }
           }
+      }
+      constructor(map) {
+          this.map = {};
           this.map = map;
       }
       getAvaiableAssets(address) {
@@ -204,7 +261,16 @@
       tryCreate(tick) {
           for (let assetType in this.map) {
               if (!this.map[assetType][tick]) {
-                  this.map[assetType][tick] = new Brc20({}, tick);
+                  this.map[assetType][tick] = new Brc20({}, tick, "0", assetType);
+                  this.map[assetType][tick].setObserver(this.observer);
+                  if (this.observer) {
+                      this.observer.notify("asset", {
+                          assetType,
+                          tick,
+                          address: "0",
+                          balance: "0",
+                      });
+                  }
               }
           }
       }
@@ -246,7 +312,7 @@
           this.map[toAssetType][tick].mint(to, amount);
       }
       swap(address, tickIn, tickOut, amountIn, amountOut, assetType = "swap") {
-          const pair = getPairStr(tickIn, tickOut);
+          const pair = getPairStrV2(tickIn, tickOut);
           this.map[assetType][tickIn].transfer(address, pair, amountIn);
           this.map[assetType][tickOut].transfer(pair, address, amountOut);
       }
@@ -264,6 +330,8 @@
       EventType["approve"] = "approve";
       EventType["conditionalApprove"] = "conditional-approve";
       EventType["commit"] = "commit";
+      EventType["inscribeWithdraw"] = "inscribe-withdraw";
+      EventType["withdraw"] = "withdraw";
   })(EventType || (EventType = {}));
 
   var ExactType;
@@ -278,6 +346,8 @@
       FuncType["swap"] = "swap";
       FuncType["removeLiq"] = "removeLiq";
       FuncType["decreaseApproval"] = "decreaseApproval";
+      FuncType["send"] = "send";
+      FuncType["sendLp"] = "sendLp";
   })(FuncType || (FuncType = {}));
 
   var OpType;
@@ -287,6 +357,7 @@
       OpType["commit"] = "commit";
       OpType["approve"] = "approve";
       OpType["conditionalApprove"] = "conditional-approve";
+      OpType["withdraw"] = "withdraw";
   })(OpType || (OpType = {}));
 
   const exceeding_slippage = "exceeding slippage";
@@ -296,6 +367,9 @@
   const pool_not_found = "pool not found";
   const feeRate = "6";
   class Contract {
+      setObserver(observer) {
+          this.observer = observer;
+      }
       constructor(assets, status, config) {
           this.assets = assets;
           this.status = status;
@@ -303,7 +377,7 @@
       }
       deployPool(params) {
           need(params.tick0 !== params.tick1, duplicate_tick);
-          const pair = getPairStr(params.tick0, params.tick1);
+          const pair = getPairStrV2(params.tick0, params.tick1);
           need(!this.assets.isExist(pair), pool_existed);
           this.assets.tryCreate(pair);
           return {};
@@ -314,14 +388,14 @@
           checkGtZero(amount1);
           checkGteZero(expect);
           checkSlippage(slippage1000);
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           const { address } = params;
           need(!!this.assets.isExist(pair), pool_not_found);
           this.mintFee({
               tick0,
               tick1,
           });
-          if (this.assets.get(pair).supply == "0") {
+          if (this.assets.get(pair).Supply == "0") {
               const lp = uintCal([amount0, "mul", amount1, "sqrt"]);
               const firstLP = uintCal([lp, "sub", "1000"]);
               this.assets.get(pair).mint(address, firstLP);
@@ -342,13 +416,19 @@
                       "mul",
                       this.assets.get(tick1).balanceOf(pair),
                   ]);
+                  if (this.observer) {
+                      this.observer.notify("klast", {
+                          tick: pair,
+                          value: this.status.kLast[pair],
+                      });
+                  }
               }
               return { lp: firstLP, amount0, amount1 };
           }
           else {
               let amount0Adjust;
               let amount1Adjust;
-              const poolLp = this.assets.get(pair).supply;
+              const poolLp = this.assets.get(pair).Supply;
               const poolAmount0 = this.assets.get(tick0).balanceOf(pair);
               const poolAmount1 = this.assets.get(tick1).balanceOf(pair);
               amount1Adjust = uintCal([
@@ -392,6 +472,12 @@
                       "mul",
                       this.assets.get(tick1).balanceOf(pair),
                   ]);
+                  if (this.observer) {
+                      this.observer.notify("klast", {
+                          tick: pair,
+                          value: this.status.kLast[pair],
+                      });
+                  }
               }
               return { lp, amount0: amount0Adjust, amount1: amount1Adjust };
           }
@@ -406,9 +492,9 @@
               tick0,
               tick1,
           });
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           need(!!this.assets.isExist(pair), pool_not_found);
-          const poolLp = this.assets.get(pair).supply;
+          const poolLp = this.assets.get(pair).Supply;
           const reserve0 = this.assets.get(tick0).balanceOf(pair);
           const reserve1 = this.assets.get(tick1).balanceOf(pair);
           const acquire0 = uintCal([lp, "mul", reserve0, "div", poolLp]);
@@ -436,6 +522,12 @@
                   "mul",
                   this.assets.get(tick1).balanceOf(pair),
               ]);
+              if (this.observer) {
+                  this.observer.notify("klast", {
+                      tick: pair,
+                      value: this.status.kLast[pair],
+                  });
+              }
           }
           return { tick0, tick1, amount0: acquire0, amount1: acquire1 };
       }
@@ -444,7 +536,7 @@
           checkGtZero(amount);
           checkGteZero(expect);
           checkSlippage(slippage1000);
-          const pair = getPairStr(tickIn, tickOut);
+          const pair = getPairStrV2(tickIn, tickOut);
           const reserveIn = this.assets.get(tickIn).balanceOf(pair);
           const reserveOut = this.assets.get(tickOut).balanceOf(pair);
           let amountIn;
@@ -464,7 +556,7 @@
                   "div",
                   uintCal(["1000", "add", slippage1000]),
               ]);
-              need(bn(amountOut).gte(amountOutMin), exceeding_slippage);
+              need(bn(amountOut).gte(amountOutMin), exceeding_slippage + ": " + amountOut + " " + amountOutMin);
               ret = amountOut;
           }
           else {
@@ -528,7 +620,7 @@
       }
       getFeeLp(params) {
           const { tick0, tick1 } = params;
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           const reserve0 = this.assets.get(tick0).balanceOf(pair);
           const reserve1 = this.assets.get(tick1).balanceOf(pair);
           {
@@ -537,7 +629,7 @@
                   const rootKLast = uintCal([this.status.kLast[pair], "sqrt"]);
                   if (bn(rootK).gt(rootKLast)) {
                       const numerator = uintCal([
-                          this.assets.get(pair).supply,
+                          this.assets.get(pair).Supply,
                           "mul",
                           uintCal([rootK, "sub", rootKLast]),
                       ]);
@@ -552,7 +644,7 @@
       }
       mintFee(params) {
           const { tick0, tick1 } = params;
-          const pair = getPairStr(tick0, tick1);
+          const pair = getPairStrV2(tick0, tick1);
           {
               const liquidity = this.getFeeLp(params);
               if (bn(liquidity).gt("0")) {
@@ -591,6 +683,7 @@
       }
   }
 
+  const updateHeight1 = 1;
   class ContractValidator {
       get Contract() {
           return this.contract;
@@ -607,7 +700,7 @@
           need(sortTickParams({ tick0, tick1 }).tick0 == tick0);
           return { tick0, tick1 };
       }
-      convertFuncInscription2Internal(index, op) {
+      convertFuncInscription2Internal(index, op, height) {
           const target = op.data[index];
           const address = target.addr;
           let lastFunc;
@@ -645,73 +738,149 @@
           }
           else if (lastFunc.func == FuncType.addLiq) {
               const params = lastFunc.params;
-              const pair = this.getPairStruct(params[0]);
-              const decimal0 = this.decimal.get(pair.tick0);
-              const decimal1 = this.decimal.get(pair.tick1);
-              return {
-                  id,
-                  func: lastFunc.func,
-                  params: {
-                      address: lastFunc.addr,
-                      tick0: pair.tick0,
-                      tick1: pair.tick1,
-                      amount0: bnUint(params[1], decimal0),
-                      amount1: bnUint(params[2], decimal1),
-                      expect: bnUint(params[3], LP_DECIMAL),
-                      slippage1000: bnUint(params[4], "3"),
-                  },
-                  prevs,
-                  ts: lastFunc.ts,
-                  sig: lastFunc.sig,
-              };
+              if (height < updateHeight1) {
+                  const pair = this.getPairStruct(params[0]);
+                  const decimal0 = this.decimal.get(pair.tick0);
+                  const decimal1 = this.decimal.get(pair.tick1);
+                  return {
+                      id,
+                      func: lastFunc.func,
+                      params: {
+                          address: lastFunc.addr,
+                          tick0: pair.tick0,
+                          tick1: pair.tick1,
+                          amount0: bnUint(params[1], decimal0),
+                          amount1: bnUint(params[2], decimal1),
+                          expect: bnUint(params[3], LP_DECIMAL),
+                          slippage1000: bnUint(params[4], "3"),
+                      },
+                      prevs,
+                      ts: lastFunc.ts,
+                      sig: lastFunc.sig,
+                  };
+              }
+              else {
+                  const tick0 = params[0];
+                  const tick1 = params[1];
+                  const decimal0 = this.decimal.get(tick0);
+                  const decimal1 = this.decimal.get(tick1);
+                  return {
+                      id,
+                      func: lastFunc.func,
+                      params: {
+                          address: lastFunc.addr,
+                          tick0,
+                          tick1,
+                          amount0: bnUint(params[2], decimal0),
+                          amount1: bnUint(params[3], decimal1),
+                          expect: bnUint(params[4], LP_DECIMAL),
+                          slippage1000: bnUint(params[5], "3"),
+                      },
+                      prevs,
+                      ts: lastFunc.ts,
+                      sig: lastFunc.sig,
+                  };
+              }
           }
           else if (lastFunc.func == FuncType.swap) {
               const params = lastFunc.params;
-              const pair = this.getPairStruct(params[0]);
-              const decimal0 = this.decimal.get(pair.tick0);
-              const decimal1 = this.decimal.get(pair.tick1);
-              const expectDecimal = params[1] == pair.tick0 ? decimal1 : decimal0;
-              const exactType = params[3];
-              const tick = params[1];
-              const tickOther = params[1] == pair.tick0 ? pair.tick1 : pair.tick0;
-              return {
-                  id,
-                  func: lastFunc.func,
-                  params: {
-                      address: lastFunc.addr,
-                      tickIn: exactType == ExactType.exactIn ? tick : tickOther,
-                      tickOut: exactType == ExactType.exactOut ? tick : tickOther,
-                      amount: bnUint(params[2], this.decimal.get(params[1])),
-                      exactType,
-                      expect: bnUint(params[4], expectDecimal),
-                      slippage1000: bnUint(params[5], "3"),
-                  },
-                  prevs,
-                  ts: lastFunc.ts,
-                  sig: lastFunc.sig,
-              };
+              if (height < updateHeight1) {
+                  const pair = this.getPairStruct(params[0]);
+                  const decimal0 = this.decimal.get(pair.tick0);
+                  const decimal1 = this.decimal.get(pair.tick1);
+                  const expectDecimal = params[1] == pair.tick0 ? decimal1 : decimal0;
+                  const exactType = params[3];
+                  const tick = params[1];
+                  const tickOther = params[1] == pair.tick0 ? pair.tick1 : pair.tick0;
+                  return {
+                      id,
+                      func: lastFunc.func,
+                      params: {
+                          address: lastFunc.addr,
+                          tickIn: exactType == ExactType.exactIn ? tick : tickOther,
+                          tickOut: exactType == ExactType.exactOut ? tick : tickOther,
+                          amount: bnUint(params[2], this.decimal.get(params[1])),
+                          exactType,
+                          expect: bnUint(params[4], expectDecimal),
+                          slippage1000: bnUint(params[5], "3"),
+                      },
+                      prevs,
+                      ts: lastFunc.ts,
+                      sig: lastFunc.sig,
+                  };
+              }
+              else {
+                  const tick0 = params[0];
+                  const tick1 = params[1];
+                  const decimal0 = this.decimal.get(tick0);
+                  const decimal1 = this.decimal.get(tick1);
+                  const expectDecimal = params[2] == tick0 ? decimal1 : decimal0;
+                  const exactType = params[4];
+                  const tick = params[2];
+                  const tickOther = params[2] == tick0 ? tick1 : tick0;
+                  return {
+                      id,
+                      func: lastFunc.func,
+                      params: {
+                          address: lastFunc.addr,
+                          tickIn: exactType == ExactType.exactIn ? tick : tickOther,
+                          tickOut: exactType == ExactType.exactOut ? tick : tickOther,
+                          amount: bnUint(params[3], this.decimal.get(params[1])),
+                          exactType,
+                          expect: bnUint(params[5], expectDecimal),
+                          slippage1000: bnUint(params[6], "3"),
+                      },
+                      prevs,
+                      ts: lastFunc.ts,
+                      sig: lastFunc.sig,
+                  };
+              }
           }
           else if (lastFunc.func == FuncType.removeLiq) {
               const params = lastFunc.params;
-              const pair = this.getPairStruct(params[0]);
-              const decimal0 = this.decimal.get(pair.tick0);
-              const decimal1 = this.decimal.get(pair.tick1);
-              return {
-                  id,
-                  func: lastFunc.func,
-                  params: {
-                      address: lastFunc.addr,
-                      tick0: pair.tick0,
-                      tick1: pair.tick1,
-                      lp: bnUint(params[1], LP_DECIMAL),
-                      amount0: bnUint(params[2], decimal0),
-                      amount1: bnUint(params[3], decimal1),
-                      slippage1000: bnUint(params[4], "3"),
-                  },
-                  prevs,
-                  ts: lastFunc.ts,
-                  sig: lastFunc.sig,
-              };
+              if (height < updateHeight1) {
+                  const pair = this.getPairStruct(params[0]);
+                  const decimal0 = this.decimal.get(pair.tick0);
+                  const decimal1 = this.decimal.get(pair.tick1);
+                  return {
+                      id,
+                      func: lastFunc.func,
+                      params: {
+                          address: lastFunc.addr,
+                          tick0: pair.tick0,
+                          tick1: pair.tick1,
+                          lp: bnUint(params[1], LP_DECIMAL),
+                          amount0: bnUint(params[2], decimal0),
+                          amount1: bnUint(params[3], decimal1),
+                          slippage1000: bnUint(params[4], "3"),
+                      },
+                      prevs,
+                      ts: lastFunc.ts,
+                      sig: lastFunc.sig,
+                  };
+              }
+              else {
+                  const tick0 = params[0];
+                  const tick1 = params[1];
+                  const decimal0 = this.decimal.get(tick0);
+                  const decimal1 = this.decimal.get(tick1);
+                  return {
+                      id,
+                      func: lastFunc.func,
+                      params: {
+                          address: lastFunc.addr,
+                          tick0,
+                          tick1,
+                          lp: bnUint(params[2], LP_DECIMAL),
+                          amount0: bnUint(params[3], decimal0),
+                          amount1: bnUint(params[4], decimal1),
+                          slippage1000: bnUint(params[5], "3"),
+                      },
+                      prevs,
+                      ts: lastFunc.ts,
+                      sig: lastFunc.sig,
+                  };
+              }
           }
           else if (lastFunc.func == FuncType.decreaseApproval) {
               const params = lastFunc.params;
@@ -730,8 +899,46 @@
                   sig: lastFunc.sig,
               };
           }
+          else if (lastFunc.func == FuncType.send) {
+              const params = lastFunc.params;
+              const tick = params[1];
+              const amount = params[2];
+              return {
+                  id,
+                  func: lastFunc.func,
+                  params: {
+                      address: lastFunc.addr,
+                      from: lastFunc.addr,
+                      to: params[0],
+                      tick,
+                      amount: bnUint(amount, this.decimal.get(tick)),
+                  },
+                  prevs,
+                  ts: lastFunc.ts,
+                  sig: lastFunc.sig,
+              };
+          }
+          else if (lastFunc.func == FuncType.sendLp) {
+              const params = lastFunc.params;
+              const tick = params[1];
+              const amount = params[2];
+              return {
+                  id,
+                  func: lastFunc.func,
+                  params: {
+                      address: lastFunc.addr,
+                      from: lastFunc.addr,
+                      to: params[0],
+                      tick,
+                      amount: bnUint(amount, this.decimal.get(tick)),
+                  },
+                  prevs,
+                  ts: lastFunc.ts,
+                  sig: lastFunc.sig,
+              };
+          }
       }
-      convertFuncInternal2Inscription(func) {
+      convertFuncInternal2Inscription(func, height) {
           if (func.func == FuncType.deployPool) {
               const params = sortTickParams(func.params);
               return {
@@ -749,7 +956,7 @@
                   id: func.id,
                   func: func.func,
                   params: [
-                      getPairStr(params.tick0, params.tick1),
+                      getPairStrV2(params.tick0, params.tick1),
                       bnDecimal(params.amount0, this.decimal.get(params.tick0)),
                       bnDecimal(params.amount1, this.decimal.get(params.tick1)),
                       bnDecimal(params.expect, LP_DECIMAL),
@@ -770,7 +977,7 @@
                   id: func.id,
                   func: func.func,
                   params: [
-                      getPairStr(params.tickIn, params.tickOut),
+                      getPairStrV2(params.tickIn, params.tickOut),
                       tick,
                       bnDecimal(params.amount, this.decimal.get(tick)),
                       params.exactType,
@@ -788,7 +995,7 @@
                   id: func.id,
                   func: func.func,
                   params: [
-                      getPairStr(params.tick0, params.tick1),
+                      getPairStrV2(params.tick0, params.tick1),
                       bnDecimal(params.lp, LP_DECIMAL),
                       bnDecimal(params.amount0, this.decimal.get(params.tick0)),
                       bnDecimal(params.amount1, this.decimal.get(params.tick1)),
@@ -828,6 +1035,8 @@
                   continue;
               }
               const event = {
+                  cursor: i,
+                  valid: true,
                   event: item.type,
                   height: item.height,
                   from: item.from,
@@ -842,13 +1051,6 @@
               if (event.op.tick) {
                   event.op.tick = this.decimal.getRealTick(event.op.tick);
               }
-              need([
-                  OpType.approve,
-                  OpType.commit,
-                  OpType.conditionalApprove,
-                  OpType.deploy,
-                  OpType.transfer,
-              ].includes(event.op.op));
               if (event.op.op == OpType.deploy) {
                   need(!!event.op.init.sequencer);
                   need(!!event.op.init.fee_to);
@@ -878,8 +1080,8 @@
               else if (event.op.op == OpType.commit) {
                   for (let j = 0; j < event.op.data.length; j++) {
                       try {
-                          const func = this.convertFuncInscription2Internal(j, event.op);
-                          this.aggregate(func, parseFloat(event.op.gas_price), event.inscriptionId, j);
+                          const func = this.convertFuncInscription2Internal(j, event.op, event.height);
+                          this.aggregate(func, parseFloat(event.op.gas_price), event.inscriptionId, j, event.height);
                       }
                       catch (err) {
                           console.log(event.op.data[j]);
@@ -902,11 +1104,18 @@
               }
           }
       }
-      aggregate(func, gasPrice, commit, index) {
-          const funcLength = this.getFuncInternalLength(this.convertFuncInternal2Inscription(func));
+      aggregate(func, gasPrice, commit, index, height) {
+          let funcLength;
+          if (height < updateHeight1) {
+              funcLength = this.getFuncInternalLength(this.convertFuncInternal2Inscription(func, height));
+          }
+          else {
+              funcLength = 1;
+          }
           const gasTick = this.moduleInitParams.gas_tick;
           const amount = this.calculateServerFee(gasPrice, funcLength);
           const sendParams = {
+              address: func.params.address,
               from: func.params.address,
               to: this.gas_to,
               amount: bnUint(amount, this.decimal.get(gasTick)),
@@ -917,6 +1126,8 @@
           }
           if (func.func == FuncType.deployPool) {
               this.contract.deployPool(func.params);
+              this.contract.assets.tryCreate(func.params.tick0);
+              this.contract.assets.tryCreate(func.params.tick1);
           }
           else if (func.func == FuncType.addLiq) {
               this.contract.addLiq(func.params);
@@ -935,9 +1146,16 @@
           this.results.push(this.genResult({ commit, function: index }));
       }
       isLp(tick) {
-          return buffer.Buffer.from(tick).length == 9 && tick[4] == "/";
+          try {
+              const pair = getPairStructV2(tick);
+              return getPairStrV2(pair.tick0, pair.tick1) == tick;
+          }
+          catch (err) {
+              return false;
+          }
       }
       genResult(params) {
+          var _a, _b;
           const assets = this.contract.assets;
           const map = this.contract.assets.dataRefer();
           const data = {
@@ -948,7 +1166,7 @@
               const brc20 = map["swap"][tick];
               if (this.isLp(tick)) {
                   const pair = tick;
-                  const { tick0, tick1 } = this.getPairStruct(pair);
+                  const { tick0, tick1 } = getPairStructV2(pair);
                   let reserve1 = "0";
                   let reserve0 = "0";
                   try {
@@ -963,7 +1181,14 @@
                       pair: tick,
                       reserve0,
                       reserve1,
-                      lp: bnDecimal(assets.get(pair).supply, LP_DECIMAL),
+                      lp: bnDecimal(assets.get(pair).Supply, LP_DECIMAL),
+                  });
+              }
+              if (!brc20.balance["0"]) {
+                  data.users.push({
+                      address: "0",
+                      tick,
+                      balance: "0",
                   });
               }
               for (let key in brc20.balance) {
@@ -983,10 +1208,36 @@
               data["commit"] = params.commit;
               data["function"] = params.function;
           }
+          (_a = data.users) === null || _a === void 0 ? void 0 : _a.sort((a, b) => {
+              if (a.tick < b.tick) {
+                  return -1;
+              }
+              if (a.tick > b.tick) {
+                  return 1;
+              }
+              if (a.address < b.address) {
+                  return -1;
+              }
+              if (a.address > b.address) {
+                  return 1;
+              }
+              return 0;
+          });
+          (_b = data.pools) === null || _b === void 0 ? void 0 : _b.sort((a, b) => {
+              if (a.pair < b.pair) {
+                  return 1;
+              }
+              else if (a.pair > b.pair) {
+                  return -1;
+              }
+              else {
+                  return 0;
+              }
+          });
           return data;
       }
-      verify(finalResultData) {
-          return _.isEqual(this.genResult(), finalResultData);
+      verify(expectResult) {
+          return JSON.stringify(this.genResult()) == JSON.stringify(expectResult);
       }
   }
 

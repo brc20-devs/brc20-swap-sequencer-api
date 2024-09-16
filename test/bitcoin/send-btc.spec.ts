@@ -1,9 +1,11 @@
 import * as bitcoin from "bitcoinjs-lib";
 import { expect } from "chai";
 import { describe, it } from "mocha";
+import { config } from "../../src//config";
 import { Wallet, generateSendBTCTx } from "../../src/lib/bitcoin";
 import { UTXO } from "../../src/types/api";
 import { AddressType } from "../../src/types/domain";
+import { DateLogger } from "../../src/utils/logger";
 const dummy_txid =
   "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -11,6 +13,8 @@ let btcWallet: Wallet;
 let toWallet: Wallet;
 describe("send-btc", () => {
   before(() => {
+    global.config = config;
+    global.logger = new DateLogger();
     global.network = bitcoin.networks.bitcoin;
     btcWallet = Wallet.fromRandomLikeAddressType(AddressType.P2TR);
     toWallet = Wallet.fromRandomLikeAddressType(AddressType.P2TR);

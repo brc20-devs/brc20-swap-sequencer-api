@@ -1,24 +1,24 @@
 import { LoggerLevel } from "../config";
+import { Brc20 } from "../contract/brc20";
 
 export type Config = {
   loggerLevel: LoggerLevel;
   cors: boolean;
   db: string;
-  isLocalTest: boolean;
-  localDebug: boolean;
-  routeDebugLog: boolean;
-  winstonDebugLog: boolean;
+  openSwagger: boolean;
   fakeMarketPrice: boolean;
   fixedGasPrice: string;
   port: number;
   mongoUrl: string;
   openApi: {
     url: string;
+    host: string;
     apiKey: string;
   };
-  unisatApi: {
+  openApi2: {
     url: string;
     host: string;
+    apiKey: string;
   };
   mempoolApi: string;
   network: string;
@@ -49,7 +49,7 @@ export type Config = {
   source: string;
   isContractOnChain: boolean;
   pendingTransferNum: number;
-  pendingDepositDirectNum: number; // deposit(direct)
+  pendingDepositDirectNum: number; // deposit(direct)api
   pendingDepositMatchingNum: number; // deposit(matching)
   pendingRollupNum: number;
   pendingWithdrawNum: number;
@@ -67,12 +67,16 @@ export type Config = {
   };
   commitFeeRateRatio: number;
   userFeeRateRatio: number;
+  minFeeRate: number;
   verifyCommitInvalidException: boolean;
   verifyCommitCriticalException: boolean;
   verifyCommitFatalNum: number;
-  canSwap: boolean;
+  binOpts: string[];
   userWhiteList: string[];
   onlyUserWhiteList: boolean;
+  updateHeight1: number;
+  initTicks: string[];
+  readonly: boolean;
 };
 
 export enum AddressType {
@@ -113,14 +117,12 @@ export type Pair = {
   tick1: string;
 };
 
-export type SpaceSnapshot = {
+export type SnapshotObj = {
   assets: {
-    [key: string]: { [key: string]: { balance: object; tick: string } };
-  };
-  assetsCheck: {
-    [key: string]: { [key: string]: string[] };
+    [assetType: string]: { [tick: string]: Brc20 };
   };
   contractStatus: ContractStatus;
+  used: boolean;
 };
 
 export type OridinalMsg = {
@@ -155,3 +157,10 @@ export type FuncMsg = {
   ts: number;
   sig: string;
 };
+
+export enum BitcoinNetworkType {
+  FRACTAL_BITCOIN_MAINNET = "FRACTAL_BITCOIN_MAINNET",
+  FRACTAL_BITCOIN_TESTNET = "FRACTAL_BITCOIN_TESTNET",
+  BITCOIN_MAINNET = "BITCOIN_MAINNET",
+  BITCOIN_TESTNET = "BITCOIN_TESTNET",
+}

@@ -42,7 +42,7 @@ import { bnUint } from "../../src/contract/bn";
 import { ContractLoader } from "../../src/contract/contract-loader";
 import { convertResultToDecimal } from "../../src/domain/convert-struct";
 import { Decimal } from "../../src/domain/decimal";
-import { Space } from "../../src/domain/space";
+import { Space, SpaceType } from "../../src/domain/space";
 import {
   AddLiqIn,
   DeployPoolIn,
@@ -84,15 +84,19 @@ describe("Contract", () => {
           approve: {},
           conditionalApprove: {},
         },
-        assetsCheck: {},
         contractStatus: {
           kLast: {},
         },
+        used: false,
       },
       {
         feeTo: "",
         swapFeeRate1000: "0",
-      }
+      },
+      "",
+      null,
+      false,
+      SpaceType.mempool
     );
     const contract = space.Contract;
     contract.assets.tryCreate("sats");
@@ -118,7 +122,7 @@ describe("Contract", () => {
           params: item.params as any,
         };
 
-        const res = space.aggregate(func, gasPrice);
+        const res = space.aggregate(func, gasPrice, 1);
 
         if (item.result.pools) {
           const res1 = item.result.pools.sort((a, b) => {

@@ -17,8 +17,8 @@
   "author": "xhyhh0",
   "license": "",
   "scripts": {
-    "prepare-db": "ts-node script/create-index.ts",
     "start-dev": "tsc && NODE_ENV=development node ./bin/www",
+    "start-prod": "tsc && NODE_ENV=production node ./bin/www",
     "postinstall": "npx patch-package",
     "test": "NODE_ENV=local mocha -r ts-node/register test/**/*.spec.ts test/*.spec.ts   --timeout 300000",
     "build:contract": "npx rollup -c ./build/contract/rollup.config.mjs",
@@ -38,6 +38,7 @@
     "bignumber.js": "^9.1.1",
     "bitcoinjs-lib": "6.1.0",
     "crypto-js": "^4.2.0",
+    "dotenv": "^16.4.5",
     "ecpair": "^2.1.0",
     "ejs": "^3.1.9",
     "fastify": "^4.17.0",

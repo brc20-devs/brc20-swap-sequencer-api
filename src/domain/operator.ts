@@ -1,5 +1,3 @@
-import { Mutex } from "async-mutex";
-import _ from "lodash";
 import hash from "object-hash";
 import {
   bn,
@@ -9,14 +7,19 @@ import {
   decimalCal,
   uintCal,
 } from "../contract/bn";
-import { getPairStr } from "../contract/contract-utils";
-import { OpCommitData } from "../dao/op-commit-dao";
-import { OridinalMsg, SpaceSnapshot } from "../types/domain";
+import {
+  convertPairStrV2ToPairStrV1,
+  getPairStrV2,
+} from "../contract/contract-utils";
+import { OpCommitData } from "../dao/commit-dao";
+import { EventType } from "../types/api";
+import { OridinalMsg } from "../types/domain";
 import {
   ContractResult,
   ExactType,
   FuncType,
   InternalFunc,
+  Result,
 } from "../types/func";
 import { CommitOp, OpEvent, OpType } from "../types/op";
 import {
@@ -28,8 +31,8 @@ import {
   QuoteSwapReq,
   QuoteSwapRes,
 } from "../types/route";
-import { isProportional, lastItem, printErr, queue } from "../utils/utils";
-import { LP_DECIMAL } from "./constant";
+import { isProportional, lastItem, sleep } from "../utils/utils";
+import { LP_DECIMAL, PENDING_CURSOR, UNCONFIRM_HEIGHT } from "./constant";
 import {
   convertFuncInternal2Inscription,
   convertReq2Arr,
@@ -37,8 +40,6 @@ import {
 } from "./convert-struct";
 import {
   CodeEnum,
-  CodeError,
-  duplicate_operation,
   insufficient_liquidity,
   invalid_amount,
   maximum_precision,
@@ -48,19 +49,19 @@ import {
   system_commit_in_progress_2,
   system_fatal_error,
   system_recovery_in_progress,
-  validation_error,
+  wait_for_rollup,
 } from "./error";
 import { getSignMsg, isSignVerify } from "./sign";
-import { Space } from "./space";
+import { Space, SpaceType } from "./space";
 import {
   checkAccess,
   checkAddressType,
   checkAmount,
   checkFuncReq,
   getTickUsdPrice,
+  isLp,
   maxAmount,
   need,
-  notInEventCommitIds,
   record,
   sysFatal,
 } from "./utils";
@@ -69,20 +70,20 @@ function getPrecisionTip(tick: string, decimal: string) {
   return `${maximum_precision} ${tick}: ${decimal}`;
 }
 
+const TAG = "operator";
+
 export class Operator {
-  private newestSpace: Space;
-  private commitData: OpCommitData;
+  private pendingSpace: Space;
+  private newestCommitData: OpCommitData;
   private firstAggregateTimestamp: number;
   private lastAggregateTimestamp: number;
-  private mutex = new Mutex();
-  private sets = new Set();
 
-  get CommitData() {
-    return this.commitData;
+  get NewestCommitData() {
+    return this.newestCommitData;
   }
 
-  get NewestSpace() {
-    return this.newestSpace;
+  get PendingSpace() {
+    return this.pendingSpace;
   }
 
   get LastAggregateTimestamp() {
@@ -91,90 +92,166 @@ export class Operator {
 
   constructor() {}
 
-  private async getCommitEventsNotInEventList() {
-    const notInEventList = await opCommitDao.findNotInEventList();
-    if (this.commitData) {
-      let hasInList = false;
-      for (let i = 0; i < notInEventList.length; i++) {
-        if (notInEventList[i].op.parent == this.commitData.op.parent) {
-          need(i == notInEventList.length - 1);
-          hasInList = true;
+  private async getUnConfirmedCommitDataFrom(inscriptionId: string) {
+    let ret = await opCommitDao.findFrom({ inscriptionId }, false);
+    // need(ret.length > 0, null, null, true);
 
-          // use memory data (newest)
-          notInEventList[i] = this.commitData;
-          break;
-        }
-      }
-      if (!hasInList) {
-        notInEventList.push(this.commitData);
-      }
+    // use memory data
+    ret = ret.filter((item) => {
+      return item.op.parent !== this.NewestCommitData.op.parent;
+    });
+    if (!config.readonly) {
+      ret.push(this.NewestCommitData);
     }
-    return notInEventList;
+    return ret;
+  }
+
+  private async getUnConfirmedOpCommitData() {
+    let ret = await opCommitDao.findNotInIndexer();
+
+    // use memory data
+    ret = ret.filter((item) => {
+      return item.op.parent !== this.NewestCommitData.op.parent;
+    });
+    ret.push(this.NewestCommitData);
+    return ret;
+  }
+
+  async getUnConfirmedOpCommitIds() {
+    const res = await opCommitDao.findNotInIndexer();
+    let ret = res.map((v) => v.inscriptionId);
+    ret = ret.filter((a) => {
+      return !!a;
+    });
+    return ret;
   }
 
   private async getVerifyCommits(newestCommit: CommitOp) {
-    let arr = await this.getCommitEventsNotInEventList();
+    let arr = await this.getUnConfirmedOpCommitData();
     let commits = arr.map((item) => {
       return item.op;
     });
+
+    // use memory data
     commits = commits.filter((item) => {
       return item.parent !== newestCommit.parent;
     });
     commits.push(newestCommit);
+
     let ret = commits.map((item) => {
       return JSON.stringify(item);
     });
     return ret;
   }
 
-  async rebuild(
-    nextEvents: OpEvent[], // next_events
-    snapshot: SpaceSnapshot, // start_snapshot
-    useMutex: boolean
-  ) {
-    /**
-     *  --------------- API ---------------|------- Dao -------
-     *  [start_snapshot][...next_events...]|[...uncommit_op...]
-     *  -----------------------------------|-------------------
-     */
-    const action = async () => {
-      this.newestSpace = new Space(snapshot, env.ContractConfig);
-      for (let i = 0; i < nextEvents.length; i++) {
-        const event = nextEvents[i];
-        this.newestSpace.handleOpEvent(event);
-      }
+  async init() {
+    this.lastAggregateTimestamp = Date.now();
+    if (this.NewestCommitData.op.data.length > 0) {
+      this.firstAggregateTimestamp = this.NewestCommitData.op.data[0].ts * 1000;
+      this.lastAggregateTimestamp =
+        lastItem(this.NewestCommitData.op.data).ts * 1000;
+    } else {
+      this.lastAggregateTimestamp = Date.now();
+    }
+  }
 
-      const unconfirmCommitList = await this.getCommitEventsNotInEventList();
-      let lastCommitOpData: OpCommitData;
-      let lastCommitOpResults: ContractResult[];
-      for (let i = 0; i < unconfirmCommitList.length; i++) {
-        lastCommitOpData = unconfirmCommitList[i];
-        lastCommitOpResults = this.newestSpace.handleCommitOp(
-          lastCommitOpData.op,
-          lastCommitOpData.inscriptionId
-        );
-      }
+  async handleEvent(event: OpEvent, handleCommit: boolean) {
+    if (event.op.op == OpType.commit) {
+      logger.debug({
+        tag: TAG,
+        msg: "handle op commit",
+        parent: (event.op as CommitOp).parent,
+      });
+    }
+    let result: ContractResult[] = [];
 
-      // update commit data and result
-      if (lastCommitOpResults) {
-        this.commitData = lastCommitOpData;
+    // The commit may have already been pre-processed in the aggregation operation
+    if (event.op.op == OpType.commit && !handleCommit) {
+      this.pendingSpace.checkAndUpdateEventCoherence(event);
+    } else {
+      result = this.pendingSpace.handleEvent(event);
 
-        // fix: recalculate for delay balance, otherwise, it may result in verification failure
-        const results = lastCommitOpResults.map((item) => {
-          return item.result;
+      // update asset dao
+      try {
+        await mongoUtils.startTransaction(async () => {
+          const assetList = this.pendingSpace.NotifyDataCollector.AssetList;
+          for (let i = 0; i < assetList.length; i++) {
+            const item = assetList[i];
+            let tickDecimal: string;
+            if (isLp(item.raw.tick)) {
+              tickDecimal = LP_DECIMAL;
+            } else {
+              tickDecimal = decimal.get(item.raw.tick);
+            }
+            await assetDao.upsertData({
+              assetType: item.raw.assetType,
+              tick: item.raw.tick,
+              address: item.raw.address,
+              balance: item.raw.balance,
+              cursor: PENDING_CURSOR,
+              height: UNCONFIRM_HEIGHT,
+              commitParent: this.newestCommitData.op.parent,
+              displayBalance: bnDecimal(item.raw.balance, tickDecimal),
+            });
+            await assetSupplyDao.upsertData({
+              cursor: PENDING_CURSOR,
+              height: UNCONFIRM_HEIGHT,
+              commitParent: this.newestCommitData.op.parent,
+              tick: item.raw.tick,
+              assetType: item.raw.assetType,
+              supply:
+                this.pendingSpace.Assets.dataRefer()[item.raw.assetType][
+                  item.raw.tick
+                ].Supply,
+            });
+          }
         });
-        this.commitData.result = results;
-      } else {
+        this.pendingSpace.NotifyDataCollector.reset(
+          this.pendingSpace.LastHandledApiEvent.cursor
+        );
+      } catch (err) {
+        logger.error({
+          tag: TAG,
+          msg: "asset-update-fail-3",
+          error: err.message,
+          stack: err.stack,
+        });
+      }
+    }
+    return result;
+  }
+
+  async resetPendingSpace(space: Space) {
+    /**
+     * Under what circumstances would the pendingSpace be reset:
+     * - Initialization at startup
+     * - Reorganization
+     * - Loss of the memory pool
+     */
+    this.pendingSpace = new Space(
+      space.snapshot(),
+      env.ContractConfig,
+      space.LastCommitId,
+      space.LastHandledApiEvent,
+      true, // note
+      SpaceType.pending
+    );
+
+    // init
+    if (!this.newestCommitData) {
+      const lastCommit = (await opCommitDao.find({}, { sort: { _id: -1 } }))[0];
+      if (!lastCommit) {
         const priceInfo = await this.calculateCurPriceInfo();
-        const res = await opCommitDao.findLastCommitOp();
-        this.commitData = {
+        const parent = space.LastCommitId;
+        const gas_price = this.getAdjustedGasPrice(priceInfo.gasPrice);
+        this.newestCommitData = {
           op: {
             p: "brc20-swap",
             op: OpType.commit,
             module: config.moduleId,
-            parent: res?.inscriptionId || "",
-            quit: "", // TOFIX
-            gas_price: priceInfo.gasPrice,
+            parent,
+            quit: "",
+            gas_price,
             data: [],
           },
           feeRate: priceInfo.feeRate,
@@ -182,31 +259,50 @@ export class Operator {
           result: [],
         };
         await this.trySave();
+      } else {
+        this.newestCommitData = lastCommit;
+        await this.tryNewCommitOp();
       }
-    };
-    if (useMutex) {
-      return await queue(this.mutex, action);
-    } else {
-      return await action();
     }
-  }
 
-  async init() {
-    if (this.CommitData.op.data.length > 0) {
-      this.firstAggregateTimestamp = this.CommitData.op.data[0].ts * 1000;
-      this.lastAggregateTimestamp = lastItem(this.CommitData.op.data).ts * 1000;
-    } else {
-      this.lastAggregateTimestamp = Date.now();
+    // update unconfirmed commit op
+    const res = await this.getUnConfirmedCommitDataFrom(space.LastCommitId);
+
+    for (let i = 0; i < res.length; i++) {
+      const event: OpEvent = {
+        op: res[i].op,
+        inscriptionId: res[i].inscriptionId,
+        height: UNCONFIRM_HEIGHT, // TOCHECK: NewestHeight
+        cursor: PENDING_CURSOR,
+        valid: true,
+        event: EventType.commit,
+        from: null,
+        to: null,
+        inscriptionNumber: null,
+        blocktime: null,
+        txid: null,
+        data: null,
+      };
+      let result = await this.handleEvent(event, true);
+
+      // recalculate newest result
+      if (i == res.length - 1) {
+        if (!config.readonly) {
+          need(this.newestCommitData.op.parent == (event.op as any).parent);
+          this.newestCommitData.result = result.map((item) => {
+            return item.result;
+          });
+        }
+      }
     }
   }
 
   async tick() {
-    const ids = await notInEventCommitIds();
-    if (ids.length >= config.verifyCommitFatalNum) {
-      sysFatal("verify-commit-fatal", { ids });
-    }
+    this.pendingSpace.tick();
 
-    await this.newestSpace.tick();
+    if (config.readonly) {
+      return;
+    }
 
     await this.trySave();
     await this.tryCommit();
@@ -215,16 +311,16 @@ export class Operator {
 
   async quoteSwap(req: QuoteSwapReq): Promise<QuoteSwapRes> {
     const { tickIn, tickOut, amount, exactType } = req;
-    const pair = getPairStr(tickIn, tickOut);
-    const assets = this.NewestSpace.Assets;
-    const contract = this.NewestSpace.Contract;
+    const pair = getPairStrV2(tickIn, tickOut);
+    const assets = this.PendingSpace.Assets;
+    const contract = this.PendingSpace.Contract;
 
-    await this.mutex.waitForUnlock();
+    // await this.mutex.waitForUnlock();
 
     need(bn(amount).lt(maxAmount), invalid_amount);
     need(bn(amount).gt("0"), invalid_amount);
 
-    need(this.newestSpace.Assets.isExist(pair), pool_not_found);
+    need(this.pendingSpace.Assets.isExist(pair), pool_not_found);
 
     // prevent insufficient balance error
     const decimalIn = decimal.get(tickIn);
@@ -270,18 +366,18 @@ export class Operator {
     need(bn(lp).gt("0"), invalid_amount);
     need(bnDecimalPlacesValid(lp, LP_DECIMAL), getPrecisionTip(lp, LP_DECIMAL));
 
-    await this.mutex.waitForUnlock();
+    // await this.mutex.waitForUnlock();
 
     const decimal0 = decimal.get(tick0);
     const decimal1 = decimal.get(tick1);
 
     const lpInt = bnUint(lp, LP_DECIMAL);
-    const pair = getPairStr(tick0, tick1);
-    const assets = this.NewestSpace.Assets;
+    const pair = getPairStrV2(tick0, tick1);
+    const assets = this.PendingSpace.Assets;
     const poolLp = uintCal([
-      assets.get(pair).supply,
+      assets.get(pair).Supply,
       "add",
-      this.NewestSpace.Contract.getFeeLp({ tick0, tick1 }),
+      this.PendingSpace.Contract.getFeeLp({ tick0, tick1 }),
     ]);
     const poolAmount0 = assets.get(tick0).balanceOf(pair);
     const poolAmount1 = assets.get(tick1).balanceOf(pair);
@@ -304,12 +400,12 @@ export class Operator {
     const { tick0, tick1, amount0: reqAmount0, amount1: reqAmount1 } = req;
     const decimal0 = decimal.get(tick0);
     const decimal1 = decimal.get(tick1);
-    const pair = getPairStr(tick0, tick1);
-    const assets = this.NewestSpace.Assets;
+    const pair = getPairStrV2(tick0, tick1);
+    const assets = this.PendingSpace.Assets;
 
-    await this.mutex.waitForUnlock();
+    // await this.mutex.waitForUnlock();
 
-    if (!assets.isExist(pair) || assets.get(pair).supply == "0") {
+    if (!assets.isExist(pair) || assets.get(pair).Supply == "0") {
       checkAmount(reqAmount0, decimal0);
       checkAmount(reqAmount1, decimal1);
 
@@ -335,9 +431,9 @@ export class Operator {
     } else {
       need(!reqAmount0 || !reqAmount1);
       const poolLp = uintCal([
-        assets.get(pair).supply,
+        assets.get(pair).Supply,
         "add",
-        this.NewestSpace.Contract.getFeeLp({ tick0, tick1 }),
+        this.PendingSpace.Contract.getFeeLp({ tick0, tick1 }),
       ]);
       const poolAmount0 = assets.get(tick0).balanceOf(pair);
       const poolAmount1 = assets.get(tick1).balanceOf(pair);
@@ -446,10 +542,7 @@ export class Operator {
       await api.tickPrice(env.ModuleInitParams.gas_tick)
     ).toString();
 
-    const res2 = await opCommitDao.find(
-      { invalid: { $ne: true } },
-      { sort: { _id: -1 }, limit: 2 }
-    );
+    const res2 = await opCommitDao.find({}, { sort: { _id: -1 }, limit: 2 });
 
     // limit price
     if (res2.length > 1 && res2[1].satsPrice) {
@@ -475,18 +568,18 @@ export class Operator {
 
   getSignMsg(req: FuncReq) {
     const address = req.req.address;
-    const op = this.commitData.op;
+    const op = this.newestCommitData.op;
     checkAddressType(address);
     this.checkSystemStatus();
     const res: OridinalMsg[] = [];
-    for (let i = 0; i < this.commitData.op.data.length; i++) {
-      const item = this.commitData.op.data[i];
+    for (let i = 0; i < this.newestCommitData.op.data.length; i++) {
+      const item = this.newestCommitData.op.data[i];
       if (item.addr == address) {
         res.push({
-          module: this.commitData.op.module,
-          parent: this.commitData.op.parent,
-          quit: this.commitData.op.quit,
-          gas_price: this.commitData.op.gas_price,
+          module: this.newestCommitData.op.module,
+          parent: this.newestCommitData.op.parent,
+          quit: this.newestCommitData.op.quit,
+          gas_price: this.newestCommitData.op.gas_price,
           addr: item.addr,
           func: item.func,
           params: item.params,
@@ -506,11 +599,12 @@ export class Operator {
         ts: req.req.ts,
       })
     );
-    logger.info({
-      tag: "sign-msg",
-      commitParent: op.parent,
-      ...ret,
-    });
+    // logger.debug({
+    //   tag: TAG,
+    //   msg: "sign msg",
+    //   commitParent: op.parent,
+    //   ...ret,
+    // });
 
     return ret;
   }
@@ -521,273 +615,299 @@ export class Operator {
       system_commit_in_progress_1,
       CodeEnum.commiting
     );
-    need(!opSender.Committing, system_commit_in_progress_2, CodeEnum.commiting);
-    need(!opBuilder.IsRestoring, system_recovery_in_progress);
+    need(!sender.Committing, system_commit_in_progress_2, CodeEnum.commiting);
+    need(
+      !this.newestCommitData.inscriptionId,
+      system_commit_in_progress_2,
+      CodeEnum.commiting
+    );
+    need(!builder.IsResetPendingSpace, system_recovery_in_progress);
     need(!fatal, system_fatal_error, CodeEnum.fatal_error);
+  }
+
+  private /** @note must sync */ __aggregate(req: FuncReq, test = false) {
+    // check sign
+    const { id, prevs, signMsg } = operator.getSignMsg(req);
+    logger.debug({
+      tag: TAG,
+      msg: "verify sig",
+      id,
+      address: req.req.address,
+      signMsg,
+      prevs,
+      sig: req.req.sig,
+      parent: this.newestCommitData.op.parent,
+    });
+    need(
+      isSignVerify(req.req.address, signMsg, req.req.sig),
+      sign_fail,
+      CodeEnum.signature_fail
+    );
+
+    // TODO: check more verify
+    const func: InternalFunc = {
+      id,
+      ...convertReq2Map(req),
+      prevs,
+      ts: req.req.ts,
+      sig: req.req.sig,
+    };
+    const gasPrice = this.newestCommitData.op.gas_price;
+
+    // const { address } = req.req;
+    let tick: string;
+    if (req.func == FuncType.decreaseApproval) {
+      tick = req.req.tick;
+    } else if (req.func == FuncType.swap) {
+      tick = getPairStrV2(req.req.tickIn, req.req.tickOut);
+    } else if (req.func == FuncType.send || req.func == FuncType.sendLp) {
+      tick = req.req.tick;
+    } else {
+      tick = getPairStrV2(req.req.tick0, req.req.tick1);
+    }
+    const tmp = this.pendingSpace.partialClone(req.req.address, tick);
+
+    // check exception
+    const lcoalRes = tmp.aggregate(func, gasPrice, env.NewestHeight);
+
+    if (test) {
+      return {};
+    }
+    this.pendingSpace.aggregate(func, gasPrice, env.NewestHeight);
+
+    this.newestCommitData.op.data.push(
+      convertFuncInternal2Inscription(func, env.NewestHeight)
+    );
+    this.newestCommitData.result.push(lcoalRes.result);
+
+    if (this.newestCommitData.op.data.length == 1) {
+      this.firstAggregateTimestamp = Date.now();
+    }
+    this.lastAggregateTimestamp = Date.now();
+    return { func, lcoalRes };
   }
 
   async aggregate(req: FuncReq, test = false) {
     await checkAccess(req.req.address);
 
-    return await queue(this.mutex, async () => {
-      this.checkSystemStatus();
-      checkFuncReq(req);
-      checkAddressType(req.req.address);
+    const ids = await this.getUnConfirmedOpCommitIds();
+    if (ids.length >= config.verifyCommitFatalNum) {
+      throw new Error(wait_for_rollup);
+    }
 
-      // check sign
-      const { id, prevs, signMsg } = operator.getSignMsg(req);
-      need(
-        isSignVerify(req.req.address, signMsg, req.req.sig),
-        sign_fail,
-        CodeEnum.signature_fail
-      );
+    this.checkSystemStatus();
+    checkFuncReq(req);
+    checkAddressType(req.req.address);
 
-      // TODO: check more verify
-      const func: InternalFunc = {
-        id,
-        ...convertReq2Map(req),
-        prevs,
-        ts: req.req.ts,
-        sig: req.req.sig,
-      };
-      const gasPrice = this.commitData.op.gas_price;
+    const { func, lcoalRes } = this.__aggregate(req, test);
+    if (test) {
+      return;
+    }
 
-      // tmp: check same operator
-
-      // const { address } = req.req;
-      let operatorHash: string;
-      let tick: string;
-      if (req.func == FuncType.decreaseApproval) {
-        // await checkDepositLimitTime(address, req.req.tick);
-
-        tick = req.req.tick;
-        // operatorHash = hash({
-        //   func: req.func,
-        //   address: req.req.address,
-        //   tick: req.req.tick,
-        //   amount: req.req.amount,
-        // });
-      } else if (req.func == FuncType.swap) {
-        // await checkDepositLimitTime(address, req.req.tickIn);
-        // await checkDepositLimitTime(address, req.req.tickOut);
-
-        tick = getPairStr(req.req.tickIn, req.req.tickOut);
-        operatorHash = hash({
-          func: req.func,
-          address: req.req.address,
-          tickIn: req.req.tickIn,
-          tickOut: req.req.tickOut,
-          amountIn: req.req.amountIn,
-          amountOut: req.req.amountOut,
-          slippage: req.req.slippage,
-          exactType: req.req.exactType,
-        });
-      } else if (req.func == FuncType.send) {
-        tick = req.req.tick;
-        operatorHash = hash({
-          func: req.func,
-          address: req.req.address,
-          tick,
-          amount: req.req.amount,
-          from: req.req.address,
-          to: req.req.to,
-          balance: this.newestSpace.getBalance(req.req.address, tick),
-        });
-      } else {
-        // await checkDepositLimitTime(address, req.req.tick0);
-        // await checkDepositLimitTime(address, req.req.tick1);
-
-        tick = getPairStr(req.req.tick0, req.req.tick1);
-
-        // if (req.func == FuncType.removeLiq) {
-        //   operatorHash = hash({
-        //     func: req.func,
-        //     address: req.req.address,
-        //     tick0: req.req.tick0,
-        //     tick1: req.req.tick1,
-        //     lp: req.req.lp,
-        //     amount0: req.req.amount0,
-        //     amount1: req.req.amount1,
-        //   });
-        // } else if (req.func == FuncType.addLiq) {
-        //   operatorHash = hash({
-        //     func: req.func,
-        //     address: req.req.address,
-        //     tick0: req.req.tick0,
-        //     tick1: req.req.tick1,
-        //     lp: req.req.lp,
-        //     amount0: req.req.amount0,
-        //     amount1: req.req.amount1,
-        //   });
-        // }
-      }
-      need(!this.sets.has(operatorHash), duplicate_operation);
-
-      const tmp = this.newestSpace.partialClone(req.req.address, tick);
-
-      // check exception
-      const res = tmp.aggregate(func, gasPrice);
-
-      if (config.verifyCommit) {
-        await this.rebuild(
-          opBuilder.AllEventsFromStart,
-          opBuilder.AllEventsFromStartSnapshot,
-          false // the outer layer has been locked
-        );
-
-        const tmpCommit = _.cloneDeep(this.commitData.op);
-        tmpCommit.data.push(convertFuncInternal2Inscription(func));
-        const tmpResult = _.cloneDeep(this.commitData.result);
-        tmpResult.push(res.result);
-
-        const commits = await this.getVerifyCommits(tmpCommit);
-
-        try {
-          const res2 = await api.commitVerify({
-            commits,
-            results: tmpResult,
-          });
-
-          if (res2.critical) {
-            logger.error({
-              tag: "commit-verify-critical",
-              ret: res2,
-              commits,
-              results: tmpResult,
-            });
-            if (
-              res2.message.includes("sig") ||
-              config.verifyCommitCriticalException
-            ) {
-              throw new CodeError(validation_error);
-            }
-          }
-
-          if (!res2.valid) {
-            logger.error({
-              tag: "commit-verify-invalid",
-              ret: res2,
-              commits,
-              results: tmpResult,
-            });
-            if (config.verifyCommitInvalidException) {
-              throw new CodeError(validation_error);
-            }
-          }
-        } catch (err) {
-          printErr("commit-verify-timeout", err);
-          if (config.verifyCommitInvalidException) {
-            throw new CodeError(err);
-          }
+    try {
+      const assetList = this.pendingSpace.NotifyDataCollector.AssetList;
+      for (let i = 0; i < assetList.length; i++) {
+        const item = assetList[i];
+        let tickDecimal: string;
+        if (isLp(item.raw.tick)) {
+          tickDecimal = LP_DECIMAL;
+        } else {
+          tickDecimal = decimal.get(item.raw.tick);
         }
+        await mongoUtils.startTransaction(async () => {
+          await assetDao.upsertData({
+            assetType: item.raw.assetType,
+            tick: item.raw.tick,
+            address: item.raw.address,
+            balance: item.raw.balance,
+            cursor: PENDING_CURSOR,
+            height: UNCONFIRM_HEIGHT,
+            commitParent: this.newestCommitData.op.parent,
+            displayBalance: bnDecimal(item.raw.balance, tickDecimal),
+          });
+          await assetSupplyDao.upsertData({
+            cursor: PENDING_CURSOR,
+            height: UNCONFIRM_HEIGHT,
+            commitParent: this.newestCommitData.op.parent,
+            tick: item.raw.tick,
+            assetType: item.raw.assetType,
+            supply:
+              this.pendingSpace.Assets.dataRefer()[item.raw.assetType][
+                item.raw.tick
+              ].Supply,
+          });
+        });
+        this.pendingSpace.NotifyDataCollector.reset(
+          this.pendingSpace.LastHandledApiEvent.cursor
+        );
       }
+    } catch (err) {
+      logger.error({
+        tag: TAG,
+        msg: "asset-update-fail-2",
+        error: err.message,
+        stack: err.stack,
+      });
+    }
 
-      if (test) {
-        return;
-      }
-
-      // try insert and excute
-      const ret = await record("", func, res);
-
-      this.newestSpace.aggregate(func, gasPrice);
-      this.commitData.op.data.push(convertFuncInternal2Inscription(func));
-      this.commitData.result.push(res.result);
-
-      if (this.commitData.op.data.length == 1) {
-        this.firstAggregateTimestamp = Date.now();
-      }
-      this.lastAggregateTimestamp = Date.now();
-      if (operatorHash) {
-        this.sets.add(operatorHash);
-      }
-
-      return ret;
-    });
+    // try insert and excute
+    const ret = await record("", func, lcoalRes);
+    return ret;
   }
 
   async trySave() {
     await opCommitDao.upsertByParent(
-      this.commitData.op.parent,
-      this.commitData
+      this.newestCommitData.op.parent,
+      this.newestCommitData
     );
   }
 
   reachCommitCondition() {
-    const reachMax = this.commitData.op.data.length >= config.commitPerSize;
+    const reachMax =
+      this.newestCommitData.op.data.length >= config.commitPerSize;
     const reachTime =
-      this.commitData.op.data.length > 0 &&
+      this.newestCommitData.op.data.length > 0 &&
       config.openCommitPerMinute &&
       Date.now() - this.firstAggregateTimestamp >
         config.commitPerMinute * 60 * 1000;
     return reachMax || reachTime;
   }
 
-  async tryCommit() {
-    if (
-      this.reachCommitCondition() &&
-      opSender.LastCommitOp?.parent !== this.commitData.op.parent &&
-      !opSender.Committing
-    ) {
-      await this.rebuild(
-        opBuilder.AllEventsFromStart,
-        opBuilder.AllEventsFromStartSnapshot,
-        true
-      );
-      const commits = await this.getVerifyCommits(this.commitData.op);
-
-      try {
-        const res = await api.commitVerify({
-          commits,
-          results: this.commitData.result,
+  private convertResultFormat(results: Result[]) {
+    const ret = results.map((item) => {
+      const ret = {};
+      if (item.users) {
+        ret["users"] = item.users.map((item2) => {
+          return {
+            address: item2.address,
+            balance: item2.balance,
+            tick: isLp(item2.tick)
+              ? convertPairStrV2ToPairStrV1(item2.tick)
+              : item2.tick,
+          };
         });
-        if (!res.valid) {
-          logger.error({
-            tag: "commit-verify-invalid",
-            ret: res,
-            commits,
-            results: this.commitData.result,
-          });
-          if (config.verifyCommitInvalidException) {
-            sysFatal("commit-verify-invalid", res);
-            return;
+      }
+      if (item.pools) {
+        ret["pools"] = item.pools.map((item2) => {
+          return {
+            pair: convertPairStrV2ToPairStrV1(item2.pair),
+            reserve0: item2.reserve0,
+            reserve1: item2.reserve1,
+            lp: item2.lp,
+          };
+        });
+      }
+      return ret;
+    });
+    return ret;
+  }
+
+  private tryCommitCount = 0;
+  async tryCommit() {
+    if (this.reachCommitCondition() && !this.newestCommitData.inscriptionId) {
+      this.tryCommitCount++;
+      logger.debug({
+        tag: TAG,
+        msg: "try commit",
+        tryCommitCount: this.tryCommitCount,
+        parent: this.newestCommitData.op.parent,
+      });
+      const commits = await this.getVerifyCommits(this.newestCommitData.op);
+      const results = this.convertResultFormat(this.newestCommitData.result);
+      const parent = this.newestCommitData.op.parent;
+      need(this.newestCommitData.op.data.length == results.length);
+      const verifyParams = {
+        commits,
+        results,
+      };
+      const res = await api.commitVerify(verifyParams);
+      if (!res.valid) {
+        logger.debug({
+          tag: TAG,
+          msg: "verify fail, parent: " + parent,
+          commits,
+          results,
+          hash: hash(verifyParams),
+          tryCommitCount: this.tryCommitCount,
+          res,
+        });
+        if (config.verifyCommitInvalidException) {
+          if (this.tryCommitCount >= 10) {
+            sysFatal({
+              tag: TAG,
+              msg: "verify fail, parent: " + parent,
+              commits,
+              results,
+              hash: hash(verifyParams),
+              res,
+            });
+          } else {
+            await sleep(60_000);
+            throw new Error("verify fail, try again");
           }
         }
-      } catch (err) {
-        printErr("commit-verify-timeout", err);
-        if (config.verifyCommitInvalidException) {
-          throw new CodeError(err);
-        }
       }
-      await opSender.createCommit(this.commitData.op);
+      if (this.tryCommitCount > 1) {
+        logger.debug({
+          tag: TAG,
+          msg: "multi verify success, parent: " + parent,
+          commits,
+          results,
+          hash: hash(verifyParams),
+          tryCommitCount: this.tryCommitCount,
+          res,
+        });
+      }
+      await sender.pushCommitOp(this.newestCommitData.op);
+      this.tryCommitCount = 0;
+      logger.debug({
+        tag: TAG,
+        msg: "verify commit",
+        tryCommitCount: this.tryCommitCount,
+        inscriptionId: this.newestCommitData.inscriptionId,
+      });
+      this.pendingSpace.setLastCommitId(this.newestCommitData.inscriptionId);
+    }
+  }
+
+  private getAdjustedGasPrice(gasPrice: string) {
+    if (env.NewestHeight < config.updateHeight1) {
+      return decimalCal([gasPrice, "mul", config.userFeeRateRatio]);
+    } else {
+      return decimalCal([
+        gasPrice,
+        "mul",
+        config.userFeeRateRatio,
+        "mul",
+        400, // Assume fixed length
+      ]);
     }
   }
 
   async tryNewCommitOp() {
-    if (
-      opSender.LastCommitOp?.parent == this.commitData.op.parent &&
-      !opSender.Committing
-    ) {
+    if (this.newestCommitData.inscriptionId && !sender.Committing) {
       const priceInfo = await this.calculateCurPriceInfo();
-      this.commitData = {
+      const gas_price = this.getAdjustedGasPrice(priceInfo.gasPrice);
+      logger.debug({
+        tag: TAG,
+        msg: "tryNewCommitOp",
+        parent: this.newestCommitData.op.parent,
+      });
+      this.newestCommitData = {
         op: {
           p: "brc20-swap",
           op: OpType.commit,
           module: config.moduleId,
-          parent: opSender.LastInscriptionId,
-          quit: "", // TOFIX
-          gas_price: decimalCal([
-            priceInfo.gasPrice,
-            "mul",
-            config.userFeeRateRatio,
-          ]),
+          parent: this.newestCommitData.inscriptionId,
+          quit: "",
+          gas_price,
           data: [],
         },
         feeRate: priceInfo.feeRate,
         satsPrice: priceInfo.satsPrice,
         result: [],
       };
-      need(!!this.commitData.op.gas_price);
-
+      need(!!this.newestCommitData.op.gas_price);
       await this.trySave();
     }
   }

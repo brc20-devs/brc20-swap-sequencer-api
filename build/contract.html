@@ -2,7 +2,10 @@
 https://cdnjs.cloudflare.com/ajax/libs/bignumber.js/8.0.2/bignumber.min.js
 "></script>
 <script src="https://bundle.run/buffer@6.0.3"></script>
-
+<script>
+    window.process = {env: {BITCOIN_NETWORK: "FRACTAL_BITCOIN_TESTNET"}}
+    window.Buffer = buffer.Buffer
+</script>
 <script src="./contract.js"></script>
 <script>
     const assets = new Contract.AssetsClass({
@@ -25,5 +28,5 @@ https://cdnjs.cloudflare.com/ajax/libs/bignumber.js/8.0.2/bignumber.min.js
             feeTick: "sats",
         })
     contract.deployPool({address: "1", tick0: "ordi", tick1: "sats"})
-    console.log(contract.assets)
+    alert(JSON.stringify(contract.assets))
 </script>

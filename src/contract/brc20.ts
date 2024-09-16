@@ -1,22 +1,33 @@
+import { NotifyAssetData } from "./assets";
 import { bn, uintCal } from "./bn";
 import { need } from "./contract-utils";
+import { Observer } from "./observer";
 
 export class Brc20 {
-  readonly balance: { [key: string]: string } = {};
-  readonly tick: string;
-  private _supply: string;
+  balance: { [address: string]: string } = {};
+  tick: string;
+  private supply: string;
+  private assetType: string;
 
-  constructor(balance: { [key: string]: string }, tick: string) {
-    this.balance = balance;
-    this.tick = tick;
-    this._supply = "0";
-    for (const address in this.balance) {
-      this._supply = uintCal([this._supply, "add", this.balance[address]]);
-    }
+  private observer: Observer;
+  setObserver(observer: Observer) {
+    this.observer = observer;
   }
 
-  get supply() {
-    return this._supply;
+  constructor(
+    balance: { [address: string]: string },
+    tick: string,
+    supply: string,
+    assetType: string
+  ) {
+    this.balance = balance;
+    this.tick = tick;
+    this.supply = supply;
+    this.assetType = assetType;
+  }
+
+  get Supply() {
+    return this.supply;
   }
 
   balanceOf(address: string) {
@@ -30,6 +41,21 @@ export class Brc20 {
     this.balance[to] = uintCal([this.balance[to] || "0", "add", amount]);
     this.checkAddress(from);
     this.checkAddress(to);
+
+    if (this.observer) {
+      this.observer.notify<NotifyAssetData>("asset", {
+        assetType: this.assetType,
+        tick: this.tick,
+        address: from,
+        balance: this.balanceOf(from),
+      });
+      this.observer.notify<NotifyAssetData>("asset", {
+        assetType: this.assetType,
+        tick: this.tick,
+        address: to,
+        balance: this.balanceOf(to),
+      });
+    }
   }
 
   mint(address: string, amount: string) {
@@ -39,8 +65,17 @@ export class Brc20 {
       "add",
       amount,
     ]);
-    this._supply = uintCal([this._supply, "add", amount]);
+    this.supply = uintCal([this.supply, "add", amount]);
     this.checkAddress(address);
+
+    if (this.observer) {
+      this.observer.notify<NotifyAssetData>("asset", {
+        assetType: this.assetType,
+        tick: this.tick,
+        address,
+        balance: this.balanceOf(address),
+      });
+    }
   }
 
   burn(address: string, amount: string) {
@@ -51,8 +86,17 @@ export class Brc20 {
       "sub",
       amount,
     ]);
-    this._supply = uintCal([this._supply, "sub", amount]);
+    this.supply = uintCal([this.supply, "sub", amount]);
     this.checkAddress(address);
+
+    if (this.observer) {
+      this.observer.notify<NotifyAssetData>("asset", {
+        assetType: this.assetType,
+        tick: this.tick,
+        address,
+        balance: this.balanceOf(address),
+      });
+    }
   }
 
   private checkAmount(amount: string) {

@@ -11,7 +11,6 @@ export type RecordApproveData = {
   preResult: Result;
   result: Result;
   ts: number;
-  invalid?: boolean;
 };
 
 export class RecordApproveDao extends BaseDao<RecordApproveData> {

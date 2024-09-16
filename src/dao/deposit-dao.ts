@@ -2,6 +2,7 @@ import { DepositType } from "../types/route";
 import { BaseDao } from "./base-dao";
 
 export type DepositData = {
+  cursor: number;
   address: string;
   inscriptionId: string;
   tick: string;
@@ -10,7 +11,6 @@ export type DepositData = {
   ts: number;
   txid: string;
   type: DepositType;
-  invalid?: boolean;
 };
 
 export class DepositDao extends BaseDao<DepositData> {

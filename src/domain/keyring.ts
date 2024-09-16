@@ -98,27 +98,19 @@ export class Keyring {
     if (
       this.sequencerWallet.address !== config.keyring.sequencerWallet.address
     ) {
-      if (!config.isLocalTest) {
-        sysFatal("", "load sequencerWallet failed");
-      }
+      sysFatal({ tag: "", msg: "load sequencerWallet failed" });
     }
 
     if (this.rootWallet.address !== config.keyring.rootWallet.address) {
-      if (!config.isLocalTest) {
-        sysFatal("", "load rootWallet failed");
-      }
+      sysFatal({ tag: "", msg: "load rootWallet failed" });
     }
 
     if (this.btcWallet.address !== config.keyring.btcWallet.address) {
-      if (!config.isLocalTest) {
-        sysFatal("", "load btcWallet failed");
-      }
+      sysFatal({ tag: "", msg: "load btcWallet failed" });
     }
 
     if (this.approveWallet.address !== config.keyring.approveWallet.address) {
-      if (!config.isLocalTest) {
-        sysFatal("", "load approveWallet failed");
-      }
+      sysFatal({ tag: "", msg: "load approveWallet failed" });
     }
   }
 

@@ -3,8 +3,8 @@ import Joi from "joi";
 import _ from "lodash";
 import { bn, bnDecimal, decimalCal } from "../contract/bn";
 import { Brc20 } from "../contract/brc20";
-import { LP_DECIMAL, MAX_HEIGHT } from "../domain/constant";
-import { isLp, notInEventCommitIds } from "../domain/utils";
+import { LP_DECIMAL, UNCONFIRM_HEIGHT } from "../domain/constant";
+import { isLp } from "../domain/utils";
 import { Req, Res } from "../types/route";
 import {
   StatusAssetsReq,
@@ -24,7 +24,7 @@ import {
 import { getDate, lastItem, schema } from "../utils/utils";
 
 const formatHeight = (height: number) => {
-  return height == MAX_HEIGHT ? ("" as any) : height;
+  return height == UNCONFIRM_HEIGHT ? ("" as any) : height;
 };
 
 export function statusRoute(fastify: FastifyInstance, opts, done) {
@@ -55,9 +55,7 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
         endTime,
         displayResult,
       } = req.query;
-      const query = {
-        // invalid: { $ne: true },
-      };
+      const query = {};
       if (address) {
         query["address"] = address;
       }
@@ -108,9 +106,7 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
     async (req: Req<StatusSwapReq, "get">, res) => {
       const { address, tick, limit, start, startTime, endTime, displayResult } =
         req.query;
-      const query = {
-        // invalid: { $ne: true },
-      };
+      const query = {};
       if (address) {
         query["address"] = address;
       }
@@ -150,19 +146,19 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
     async (req: Req<StatusAssetsReq, "get">, res) => {
       const { address: specifiedAddress, tick: specifiedTick } = req.query;
       const ret = {};
-      const map = operator.NewestSpace.Assets.dataRefer();
+      const map = operator.PendingSpace.Assets.dataRefer();
 
       for (const assetType in map) {
         const asset = map[assetType];
         ret[assetType] = {};
         for (const tick in asset) {
           const brc20 = asset[tick] as Brc20;
-          if (bn(brc20.supply).gt("0")) {
+          if (bn(brc20.Supply).gt("0")) {
             if (!specifiedTick || specifiedTick.includes(tick)) {
               ret[assetType][tick] = {
                 balance: {},
                 supply: bnDecimal(
-                  brc20.supply,
+                  brc20.Supply,
                   isLp(brc20.tick) ? LP_DECIMAL : decimal.get(brc20.tick)
                 ),
               };
@@ -204,9 +200,7 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
     async (req: Req<StatusWithdrawReq, "get">, res: Res<StatusWithdrawRes>) => {
       const { address, tick, limit, start, startTime, endTime, inscriptionId } =
         req.query;
-      const query = {
-        // invalid: { $ne: true },
-      };
+      const query = {};
       if (address) {
         query["address"] = address;
       }
@@ -255,14 +249,12 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
               amount: depositItem.amount,
               height: depositItem.height,
               txid: depositItem.txid,
-              invalid: depositItem.invalid,
               date: getDate(depositItem.ts * 1000),
             },
             "matching-data": {
               consumeAmount: item.consumeAmount,
               remainAmount: item.remainAmount,
               txid: item.txid,
-              invalid: item.invalid,
               date: getDate(item.ts * 1000),
             },
           });
@@ -282,7 +274,6 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
             inscribeTxid: withdraw.inscribeTxid,
             rollUpTxid: withdraw.rollUpTxid,
             approveTxid: withdraw.approveTxid,
-            invalid: withdraw.invalid,
             errMsg: withdraw.errMsg,
             date: getDate(withdraw.ts * 1000),
           },
@@ -357,9 +348,7 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
     async (req: Req<StatusDepositReq, "get">, res: Res<StatusDepositRes>) => {
       const { address, tick, limit, start, startTime, endTime, inscriptionId } =
         req.query;
-      const query = {
-        // invalid: { $ne: true },
-      };
+      const query = {};
       if (address) {
         query["address"] = address;
       }
@@ -402,9 +391,6 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
           const withdrawItem = await withdrawDao.findOne({
             inscriptionId: item.approveInscriptionId,
           });
-          if (withdrawItem.invalid) {
-            continue;
-          }
           depositMatching.push({
             withdraw: {
               id: withdrawItem.id,
@@ -420,14 +406,12 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
               inscribeTxid: withdrawItem.inscribeTxid,
               rollUpTxid: withdrawItem.rollUpTxid,
               approveTxid: withdrawItem.approveTxid,
-              invalid: withdrawItem.invalid,
               date: getDate(withdrawItem.ts * 1000),
             },
             "matching-data": {
               consumeAmount: item.consumeAmount,
               remainAmount: item.remainAmount,
               txid: item.txid,
-              invalid: item.invalid,
               date: getDate(item.ts * 1000),
             },
           });
@@ -483,14 +467,14 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
     `/system_metric`,
     schema(Joi.object<StatusStatusReq>({}), "get"),
     async (req: Req<StatusStatusReq, "get">, res) => {
-      metric.committing.set(opSender.Committing ? 1 : 0);
-      metric.isRestoring.set(opBuilder.IsRestoring ? 1 : 0);
-      metric.tryCommitCount.set(opSender.TryCommitCount);
+      metric.committing.set(sender.Committing ? 1 : 0);
+      metric.isRestoring.set(builder.IsResetPendingSpace ? 1 : 0);
+      metric.tryCommitCount.set(sender.TryCommitCount);
 
-      const ids = await notInEventCommitIds();
+      const ids = await operator.getUnConfirmedOpCommitIds();
       metric.notInEventList.set(ids.length);
 
-      const commitOpTotal = await opCommitDao.count({ invalid: { $ne: true } });
+      const commitOpTotal = await opCommitDao.count({});
       metric.commitOpTotal.set(commitOpTotal);
 
       const curPriceInfo = await operator.calculateCurPriceInfo();
@@ -501,13 +485,15 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
       metric.curPriceInfo_feeRate.set(parseFloat(curPriceInfo.feeRate));
       metric.curPriceInfo_satsPrice.set(parseFloat(curPriceInfo.satsPrice));
 
-      metric.unCommitInfo_funcNum.set(operator.CommitData.op.data.length);
-      metric.unCommitInfo_feeRate.set(parseFloat(operator.CommitData.feeRate));
+      metric.unCommitInfo_funcNum.set(operator.NewestCommitData.op.data.length);
+      metric.unCommitInfo_feeRate.set(
+        parseFloat(operator.NewestCommitData.feeRate)
+      );
       metric.unCommitInfo_gasPrice.set(
-        parseFloat(operator.CommitData.op.gas_price)
+        parseFloat(operator.NewestCommitData.op.gas_price)
       );
       metric.unCommitInfo_satsPrice.set(
-        parseFloat(operator.CommitData.satsPrice)
+        parseFloat(operator.NewestCommitData.satsPrice)
       );
 
       metric.withdrawNum.set(withdrawNum);
@@ -522,12 +508,9 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
     `/system`,
     schema(Joi.object<StatusStatusReq>({}), "get"),
     async (req: Req<StatusStatusReq, "get">, res: Res<StatusStatusRes>) => {
-      const ids = await notInEventCommitIds();
-      const commitOpTotal = await opCommitDao.count({ invalid: { $ne: true } });
-      const res2 = await opCommitDao.find(
-        { invalid: { $ne: true } },
-        { sort: { _id: -1 }, limit: 2 }
-      );
+      const ids = await operator.getUnConfirmedOpCommitIds();
+      const commitOpTotal = await opCommitDao.count({});
+      const res2 = await opCommitDao.find({}, { sort: { _id: -1 }, limit: 2 });
 
       const A = await sequencerUtxoDao.find(
         {
@@ -574,17 +557,17 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
       }
 
       const ret: StatusStatusRes = {
-        commiting: opSender.Committing,
-        isRestoring: opBuilder.IsRestoring,
+        commiting: sender.Committing,
+        isRestoring: builder.IsResetPendingSpace,
         notInEventList: ids.length,
         notInEventIds: ids,
         commitOpTotal,
         curPriceInfo,
         unCommitInfo: {
-          funcNum: operator.CommitData.op.data.length,
-          feeRate: operator.CommitData.feeRate,
-          gasPrice: operator.CommitData.op.gas_price,
-          satsPrice: operator.CommitData.satsPrice,
+          funcNum: operator.NewestCommitData.op.data.length,
+          feeRate: operator.NewestCommitData.feeRate,
+          gasPrice: operator.NewestCommitData.op.gas_price,
+          satsPrice: operator.NewestCommitData.satsPrice,
         },
         lastCommitInfo: lastCommit
           ? {
@@ -623,7 +606,6 @@ export function statusRoute(fastify: FastifyInstance, opts, done) {
         withdrawErrorNum,
         lastAggregateTimestamp: operator.LastAggregateTimestamp,
         apiStatistic,
-        rebuildFailCount: opBuilder.RebuildFailCount,
       };
       void res.send(ret);
     }

@@ -24,7 +24,6 @@ export class Metric {
   readonly withdrawNum: Gauge;
   readonly withdrawErrorNum: Gauge;
   readonly lastAggregateTimestamp: Gauge;
-  readonly rebuildFailCount: Gauge;
 
   readonly apiMap: { [key: string]: Histogram } = {};
 
@@ -154,12 +153,6 @@ export class Metric {
     this.lastAggregateTimestamp = new Gauge({
       name: "lastAggregateTimestamp",
       help: "lastAggregateTimestamp",
-      registers: [register],
-    });
-
-    this.rebuildFailCount = new Gauge({
-      name: "rebuildFailCount",
-      help: "rebuildFailCount",
       registers: [register],
     });
   }

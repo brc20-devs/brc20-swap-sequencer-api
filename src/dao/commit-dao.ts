@@ -1,4 +1,3 @@
-import { Filter } from "mongodb";
 import { Result } from "../types/func";
 import { CommitOp } from "../types/op";
 import { BaseDao } from "./base-dao";
@@ -11,22 +10,21 @@ export type OpCommitData = {
   inscriptionId?: string;
   txid?: string;
   inEventList?: boolean;
-  invalid?: boolean;
-  invalidHandled?: boolean;
 };
 
 export class OpCommitDao extends BaseDao<OpCommitData> {
   upsertByParent(parent: string, data: Partial<OpCommitData>) {
-    return this.upsertOne(
-      { "op.parent": parent, invalid: { $ne: true } },
-      { $set: data }
-    );
+    // remove result
+    // data = _.cloneDeep(data);
+    // delete data.result;
+
+    return this.upsertOne({ "op.parent": parent }, { $set: data });
   }
 
-  async findLastCommitOp() {
+  async findLastCommitedOp() {
     return (
       await this.find(
-        { inscriptionId: { $exists: true }, invalid: { $ne: true } },
+        { inscriptionId: { $exists: true } },
         { sort: { _id: -1 }, limit: 1 }
       )
     )[0];
@@ -35,35 +33,19 @@ export class OpCommitDao extends BaseDao<OpCommitData> {
   async findUnCommitOp() {
     return (
       await this.find(
-        { inscriptionId: { $exists: false }, invalid: { $ne: true } },
+        { inscriptionId: { $exists: false } },
         { sort: { _id: -1 }, limit: 1 }
       )
     )[0];
   }
 
   async findByParent(parent: string) {
-    return await this.findOne({ "op.parent": parent, invalid: { $ne: true } });
+    return await this.findOne({ "op.parent": parent });
   }
 
-  async findFromInscriptionId(inscriptionId: string) {
-    let query: Filter<any> = { inscriptionId };
-    if (!inscriptionId) {
-      query = { inscriptionId: { $exists: false } };
-    }
-    let res = await this.findFrom(query);
-
-    // ignore invalid
-    res = res.filter((item) => {
-      return !item.invalid;
-    });
-
-    return res;
-  }
-
-  async findNotInEventList() {
+  async findNotInIndexer() {
     const query = {
       inEventList: { $ne: true },
-      invalid: { $ne: true },
     };
     return await this.find(query);
   }

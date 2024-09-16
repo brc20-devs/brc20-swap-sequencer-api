@@ -11,7 +11,7 @@ import {
   CreateDepositRes,
 } from "../types/route";
 import { queue } from "../utils/utils";
-import { MAX_HEIGHT } from "./constant";
+import { UNCONFIRM_HEIGHT } from "./constant";
 import {
   CodeError,
   deposit_error,
@@ -35,6 +35,8 @@ import { VPsbt } from "./vpsbt";
 
 const lockDelayMs = 120 * 1000;
 const nodeDelay = 120;
+
+const TAG = "matching";
 
 export class Matching {
   private mutex = new Mutex();
@@ -67,7 +69,6 @@ export class Matching {
   private async checkRollback() {
     const res = await matchingDao.find({
       ts: { $gt: Date.now() / 1000 - 10 * 24 * 3600 },
-      invalid: { $ne: true },
     });
     const map: { [key: string]: MatchingData } = {};
     for (let i = 0; i < res.length; i++) {
@@ -79,25 +80,28 @@ export class Matching {
         item.approveInscriptionId
       );
       if (
-        withdraw.getByApproveId(item.approveInscriptionId)?.status == "order"
+        conditionalWithdraw.getByApproveId(item.approveInscriptionId)?.status ==
+        "order"
       ) {
         if (
           approveInscription.data.balance !== item.remainAmount &&
           Date.now() / 1000 - item.ts > 30 * 60
         ) {
           logger.info({
-            tag: "matching-rollback",
+            tag: TAG,
+            msg: "matching-rollback",
             approveId: item.approveInscriptionId,
           });
           const res = await matchingDao.findFrom(
-            { txid: approveInscription.utxo.txid, invalid: { $ne: true } },
+            { txid: approveInscription.utxo.txid },
             true
           );
           if (res.length > 0) {
             for (let i = 1; i < res.length; i++) {
               const item = res[i];
               logger.info({
-                tag: "matching-rollback-item",
+                tag: TAG,
+                msg: "matching-rollback-item",
                 approveId: item.approveInscriptionId,
                 txid: item.txid,
               });
@@ -108,7 +112,8 @@ export class Matching {
             }
             const approveItem = res[0];
             logger.info({
-              tag: "matching-rollback-reset",
+              tag: TAG,
+              msg: "matching-rollback-reset",
               approveId: item.approveInscriptionId,
               item: approveItem,
             });
@@ -246,6 +251,7 @@ export class Matching {
       }
     }
   }
+  x;
 
   async tick() {
     for (const key in this.tmpLock) {
@@ -302,7 +308,7 @@ export class Matching {
           }
 
           const earliestTime = Math.min(
-            withdraw.getByApproveId(approveId)?.ts || nowTs,
+            conditionalWithdraw.getByApproveId(approveId)?.ts || nowTs,
             withdrawAmount[address]?.earliestTime || nowTs
           );
 
@@ -349,8 +355,8 @@ export class Matching {
         }
         approveRemainList.sort((a, b) => {
           return (
-            withdraw.getByApproveId(a.approveId)?.ts ||
-            nowTs - withdraw.getByApproveId(b.approveId)?.ts ||
+            conditionalWithdraw.getByApproveId(a.approveId)?.ts ||
+            nowTs - conditionalWithdraw.getByApproveId(b.approveId)?.ts ||
             nowTs
           );
         });
@@ -380,7 +386,7 @@ export class Matching {
 
             // unconfirm
             const info = await api.txInfo(this.newestApprove[approveId].txid);
-            if (info.height == MAX_HEIGHT) {
+            if (info.height == UNCONFIRM_HEIGHT) {
               continue;
             }
           }
@@ -433,7 +439,8 @@ export class Matching {
             approveInscription.data.op !== OpType.conditionalApprove
           ) {
             logger.error({
-              tag: "bug-approve-verify",
+              tag: TAG,
+              msg: "approve verify fail",
               infoFromApi: approveInscription,
               infoFromDao: item,
             });
@@ -481,7 +488,7 @@ export class Matching {
       if (list.length == 0) {
         return await deposit.create(req);
       } else {
-        const withdrawItem = withdraw.getByApproveId(
+        const withdrawItem = conditionalWithdraw.getByApproveId(
           list[0].approveInscriptionId
         );
         need(!!withdrawItem);
@@ -525,7 +532,8 @@ export class Matching {
             approveInscription.data.op !== OpType.conditionalApprove
           ) {
             logger.error({
-              tag: "bug-approve-verify",
+              tag: TAG,
+              msg: "approve verify fail",
               infoFromApi: approveInscription,
               infoFromDao: item,
             });

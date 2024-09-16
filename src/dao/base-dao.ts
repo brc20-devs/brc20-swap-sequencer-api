@@ -3,6 +3,7 @@ import {
   BulkWriteOptions,
   Filter,
   FindOptions,
+  IndexSpecification,
   UpdateFilter,
   UpdateOptions,
 } from "mongodb";
@@ -23,15 +24,25 @@ export class BaseDao<K extends object> {
     this.db = db;
   }
 
+  createIndex(indexSpec: IndexSpecification) {
+    return this.db.createIndex(this.tableName, indexSpec);
+  }
+
   count(filter: Filter<K>) {
     return this.db.count(this.tableName, filter);
   }
 
   insert(data: K) {
+    // if (config.readonly) {
+    //   return;
+    // }
     return this.db.insert(this.tableName, data);
   }
 
   insertMany(data: K[], opts: BulkWriteOptions = {}) {
+    // if (config.readonly) {
+    //   return;
+    // }
     return this.db.insertMany(this.tableName, data, opts);
   }
 
@@ -54,6 +65,9 @@ export class BaseDao<K extends object> {
     updateFilter: UpdateFilter<K>,
     opts: UpdateOptions = {}
   ) {
+    // if (config.readonly) {
+    //   return;
+    // }
     return this.db.updateOne(this.tableName, findFilter, updateFilter, opts);
   }
 
@@ -62,6 +76,9 @@ export class BaseDao<K extends object> {
     updateFilter: UpdateFilter<K>,
     opts: UpdateOptions = {}
   ) {
+    // if (config.readonly) {
+    //   return;
+    // }
     return this.db.updateMany(this.tableName, findFilter, updateFilter, opts);
   }
 
@@ -70,10 +87,13 @@ export class BaseDao<K extends object> {
     updateFilter: UpdateFilter<K>,
     opts: UpdateOptions = {}
   ) {
+    // if (config.readonly) {
+    //   return;
+    // }
     return this.db.upsertOne(this.tableName, findFilter, updateFilter, opts);
   }
 
-  async findFrom(findFilter: Filter<K>, include = true) {
+  async findFrom(findFilter: Filter<K>, include: boolean) {
     const res = (await this.findOne(findFilter, {
       projection: { _id: 1 },
     })) as any;

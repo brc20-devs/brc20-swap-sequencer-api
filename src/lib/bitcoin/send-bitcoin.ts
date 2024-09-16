@@ -6,6 +6,8 @@ import { ToSignInput, UTXO } from "../../types/api";
 import { ignoreVerifySig } from "./utils";
 import { Wallet } from "./wallet";
 
+const TAG = "send-bitcoin";
+
 export function generateSendBTCTx({
   wallet,
   utxos,
@@ -30,6 +32,15 @@ export function generateSendBTCTx({
   vpsbt.addOutput({ address: wallet.address, value: DUST546 }); // o1
 
   const left = vpsbt.getLeftAmount();
+  logger.debug({
+    tag: TAG,
+    msg: "generateSendBTCTx",
+    utxos,
+    toAddress,
+    toAmount,
+    feeRate,
+    left,
+  });
   need(left >= 0, insufficient_btc, CodeEnum.sequencer_insufficient_funds);
 
   const networkFee = vpsbt.estimateNetworkFee(feeRate);

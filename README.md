@@ -54,21 +54,13 @@ To use the brc20-swap project, follow these steps:
 
    Note: If you don't have MongoDB installed, you can download it from the official MongoDB website: https://www.mongodb.com/download-center/community
 
-   If you already have MongoDB installed, you can skip this step.
-
-6. Run the following command to initialize MongoDB:
-
-   ```
-   yarn prepare-db
-   ```
-
-7. Start the development server:
+6. Start the development server:
 
    ```
    yarn start-dev
    ```
 
-8. Open your web browser and navigate to `http://localhost:3000/documentation/static/index.html` to access the application.
+7. Open your web browser and navigate to `http://localhost:3000/documentation/static/index.html` to access the application.
 
 ## Build a new brc20-swap module instance
 

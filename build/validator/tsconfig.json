@@ -9,5 +9,5 @@
     "sourceMap": true,
     "resolveJsonModule": true
   },
-  "include": ["./src", "../index.ts"]
+  "include": ["./src", "../step-3-verify.ts"]
 }

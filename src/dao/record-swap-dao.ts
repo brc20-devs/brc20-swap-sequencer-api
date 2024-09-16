@@ -8,7 +8,6 @@ export type RecordSwapData = {
   address: string;
   preResult: Result;
   result: Result;
-  invalid?: boolean;
 } & SwapHistoryItem;
 
 export class RecordSwapDao extends BaseDao<RecordSwapData> {
