@@ -1,3 +1,4 @@
+import _ from "lodash";
 import hash from "object-hash";
 import {
   bn,
@@ -34,6 +35,7 @@ import {
 import { isProportional, lastItem, sleep } from "../utils/utils";
 import { LP_DECIMAL, PENDING_CURSOR, UNCONFIRM_HEIGHT } from "./constant";
 import {
+  convertFuncInscription2Internal,
   convertFuncInternal2Inscription,
   convertReq2Arr,
   convertReq2Map,
@@ -63,7 +65,6 @@ import {
   maxAmount,
   need,
   record,
-  sysFatal,
 } from "./utils";
 
 function getPrecisionTip(tick: string, decimal: string) {
@@ -138,10 +139,12 @@ export class Operator {
     });
     commits.push(newestCommit);
 
-    let ret = commits.map((item) => {
-      return JSON.stringify(item);
-    });
-    return ret;
+    return commits;
+
+    // let ret = commits.map((item) => {
+    //   return JSON.stringify(item);
+    // });
+    // return ret;
   }
 
   async init() {
@@ -812,8 +815,50 @@ export class Operator {
         tryCommitCount: this.tryCommitCount,
         parent: this.newestCommitData.op.parent,
       });
-      const commits = await this.getVerifyCommits(this.newestCommitData.op);
-      const results = this.convertResultFormat(this.newestCommitData.result);
+      const commitObjs = await this.getVerifyCommits(this.newestCommitData.op);
+      const commits = commitObjs.map((item) => {
+        return JSON.stringify(item);
+      });
+      let results = this.convertResultFormat(
+        this.newestCommitData.result
+      ) as Result[];
+
+      // Need to extract asset information involved in the pre-commit tick for indexing to verify.
+      if (commits.length > 1) {
+        results = _.cloneDeep(results);
+
+        let extraResult: Result = {
+          users: [],
+          pools: [],
+        };
+        for (let i = 0; i < commitObjs.length - 1; i++) {
+          const commit = commitObjs[i];
+          for (let j = 0; j < commit.data.length; j++) {
+            const func = convertFuncInscription2Internal(
+              j,
+              commit,
+              env.NewestHeight
+            );
+            const res = this.pendingSpace.getCurResult(func);
+            extraResult.pools.push(...(res.pools || []));
+            extraResult.users.push(...(res.users || []));
+          }
+        }
+        extraResult = this.convertResultFormat([extraResult])[0];
+
+        const lastResult = results[results.length - 1];
+        // logger.debug({ tag: TAG, msg: "add extra result before", lastResult });
+        if (!lastResult.pools) {
+          lastResult.pools = [];
+        }
+        lastResult.pools.push(...extraResult.pools);
+        if (!lastResult.users) {
+          lastResult.users = [];
+        }
+        lastResult.users.push(...extraResult.users);
+        // logger.debug({ tag: TAG, msg: "add extra result after", lastResult });
+      }
+
       const parent = this.newestCommitData.op.parent;
       need(this.newestCommitData.op.data.length == results.length);
       const verifyParams = {
@@ -832,19 +877,8 @@ export class Operator {
           res,
         });
         if (config.verifyCommitInvalidException) {
-          if (this.tryCommitCount >= 10) {
-            sysFatal({
-              tag: TAG,
-              msg: "verify fail, parent: " + parent,
-              commits,
-              results,
-              hash: hash(verifyParams),
-              res,
-            });
-          } else {
-            await sleep(60_000);
-            throw new Error("verify fail, try again");
-          }
+          await sleep(10_000);
+          throw new Error("verify fail, try again");
         }
       }
       if (this.tryCommitCount > 1) {

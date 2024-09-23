@@ -36,7 +36,6 @@ import {
   hasFuncType,
   isLp,
   need,
-  sysFatal,
 } from "./utils";
 
 const TAG = "space";
@@ -454,13 +453,15 @@ export class Space {
         try {
           ret.push(this.aggregate(func, gasPrice, height));
         } catch (err) {
-          sysFatal({
+          logger.error({
             tag: TAG,
             msg: "handle-commit",
             error: err.message,
             inscriptionId,
             parent: op.parent,
+            id: func.id,
           });
+          throw err;
         }
       }
 
@@ -501,6 +502,15 @@ export class Space {
       }
       this.lastHandledApiEvent = event;
       if (event.op.op == OpType.commit) {
+        const op = event.op as CommitOp;
+        if (this.lastCommitId) {
+          need(
+            this.lastCommitId == op.parent,
+            `inscriptoionId: ${this.lastCommitId} should be parent, but get parent: ${op.parent}`,
+            null
+            // true
+          );
+        }
         if (event.inscriptionId) {
           this.lastCommitId = event.inscriptionId;
         }

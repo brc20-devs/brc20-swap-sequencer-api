@@ -24,7 +24,7 @@ void (async () => {
     await init();
 
     const fastify = Fastify({
-      logger: true,
+      logger: false,
     });
     void wrap(fastify);
     if (config.openSwagger) {

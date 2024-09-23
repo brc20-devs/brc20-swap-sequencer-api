@@ -139,12 +139,12 @@ export class Query {
     const { tick0, tick1 } = getPairStructV2(pair);
     const res = await poolListDao.findOne({ tick0, tick1 });
     return {
-      tick0: res.tick0,
-      tick1: res.tick1,
-      lp: bn(res.lp).toString(),
-      tvl: bn(res.tvl).toString(),
-      volume24h: bn(res.volume24h).toString(),
-      volume7d: bn(res.volume7d).toString(),
+      tick0,
+      tick1,
+      lp: bn(res?.lp || 0).toString(),
+      tvl: bn(res?.tvl || 0).toString(),
+      volume24h: bn(res?.volume24h || 0).toString(),
+      volume7d: bn(res?.volume7d || 0).toString(),
     };
   }
 
@@ -357,9 +357,19 @@ export class Query {
     if (address) {
       query["address"] = address;
     }
+
     if (tick) {
-      query["$or"] = [{ tickIn: tick }, { tickOut: tick }];
+      if (tick.includes("/")) {
+        const [tick0, tick1] = tick.split("/");
+        query["$or"] = [
+          { tickIn: tick0, tickOut: tick1 },
+          { tickIn: tick1, tickOut: tick0 },
+        ];
+      } else {
+        query["$or"] = [{ tickIn: tick }, { tickOut: tick }];
+      }
     }
+
     const total = await recordSwapDao.count(query);
     const list = await recordSwapDao.find(query, {
       limit,
