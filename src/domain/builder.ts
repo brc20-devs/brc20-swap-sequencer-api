@@ -13,7 +13,7 @@ import {
   OpType,
   TransferOp,
 } from "../types/op";
-import { LP_DECIMAL, UNCONFIRM_HEIGHT } from "./constant";
+import { LP_DECIMAL } from "./constant";
 import { convertFuncInscription2Internal } from "./convert-struct";
 import { internal_server_error } from "./error";
 import { Space, SpaceType } from "./space";
@@ -132,8 +132,8 @@ export class Builder {
 
   private async restoreEventDao() {
     const status = await statusDao.findStatus();
-    if (status.confirmedLastOpEvent?.cursor) {
-      let cursor = status.confirmedLastOpEvent.cursor;
+    let cursor = status.confirmedLastOpEvent?.cursor || 0;
+    if (cursor) {
       let res: InscriptionEventsRes;
       logger.debug({ tag: TAG, msg: "restore event begin", start: cursor });
       do {
@@ -144,9 +144,6 @@ export class Builder {
         });
         for (let i = 0; i < res.detail.length; i++) {
           const event = await apiEventToOpEvent(res.detail[i], cursor);
-          if (event.height == UNCONFIRM_HEIGHT) {
-            break;
-          }
           if (event.valid) {
             await opEventDao.upsertData(event);
             await this.updateDepositData(event);
@@ -326,6 +323,12 @@ export class Builder {
         if (event.valid) {
           await opEventDao.upsertData(event);
           await this.updateDepositData(event);
+          if (event.op.op == OpType.commit) {
+            await opCommitDao.updateOne(
+              { txid: event.txid },
+              { $set: { inEventList: true } }
+            );
+          }
         }
       }
 

@@ -22,7 +22,7 @@ export class Brc20 {
   ) {
     this.balance = balance;
     this.tick = tick;
-    this.supply = supply;
+    this.supply = supply || "0";
     this.assetType = assetType;
   }
 
