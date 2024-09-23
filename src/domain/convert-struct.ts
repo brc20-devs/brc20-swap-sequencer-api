@@ -548,6 +548,7 @@ export function convertFuncInscription2Internal(
       const decimal0 = decimal.get(pair.tick0);
       const decimal1 = decimal.get(pair.tick1);
       const expectDecimal = params[1] == pair.tick0 ? decimal1 : decimal0;
+      const amountDecimal = params[1] == pair.tick0 ? decimal0 : decimal1;
       const exactType = params[3] as ExactType;
       const tick = params[1];
       const tickOther = params[1] == pair.tick0 ? pair.tick1 : pair.tick0;
@@ -558,7 +559,7 @@ export function convertFuncInscription2Internal(
           address: lastFunc.addr,
           tickIn: exactType == ExactType.exactIn ? tick : tickOther,
           tickOut: exactType == ExactType.exactOut ? tick : tickOther,
-          amount: bnUint(params[2], decimal.get(params[1])),
+          amount: bnUint(params[2], amountDecimal),
           exactType,
           expect: bnUint(params[4], expectDecimal),
           slippage1000: bnUint(params[5], "3"),
@@ -568,11 +569,21 @@ export function convertFuncInscription2Internal(
         sig: lastFunc.sig,
       };
     } else {
+      // [
+      //   "tickA",
+      //   "tickB",
+      //   "tickA",
+      //   "0.00002",
+      //   "exactIn",
+      //   "7.944318059578401335",
+      //   "0.005",
+      // ];
       const tick0 = params[0];
       const tick1 = params[1];
       const decimal0 = decimal.get(tick0);
       const decimal1 = decimal.get(tick1);
       const expectDecimal = params[2] == tick0 ? decimal1 : decimal0;
+      const amountDecimal = params[2] == tick0 ? decimal0 : decimal1;
       const exactType = params[4] as ExactType;
       const tick = params[2];
       const tickOther = params[2] == tick0 ? tick1 : tick0;
@@ -583,7 +594,7 @@ export function convertFuncInscription2Internal(
           address: lastFunc.addr,
           tickIn: exactType == ExactType.exactIn ? tick : tickOther,
           tickOut: exactType == ExactType.exactOut ? tick : tickOther,
-          amount: bnUint(params[3], decimal.get(params[1])),
+          amount: bnUint(params[3], amountDecimal),
           exactType,
           expect: bnUint(params[5], expectDecimal),
           slippage1000: bnUint(params[6], "3"),
